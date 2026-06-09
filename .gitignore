@@ -1,0 +1,144 @@
+# ──────────────────────────────────────────────────────────────────────
+#  SyncSpace — .gitignore
+#  Based on GitHub's Swift / Objective-C templates + Xcode 26 specifics.
+# ──────────────────────────────────────────────────────────────────────
+
+
+# ─── macOS system files ──────────────────────────────────────────────
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon?
+._*
+.Spotlight-V100
+.Trashes
+.fseventsd
+.TemporaryItems
+.VolumeIcon.icns
+.DocumentRevisions-V100
+.com.apple.timemachine.donotpresent
+
+
+# ─── Xcode: build products / intermediates ───────────────────────────
+build/
+DerivedData/
+*.o
+*.swiftdoc
+*.swiftmodule
+*.swiftsourceinfo
+*.abi.json
+*.tbd
+
+# Xcode resolves DerivedData outside the project, but if it ever lands here:
+**/xcuserdata/
+**/*.xcuserstate
+**/*.xcuserdatad/
+**/UserInterfaceState.xcuserstate
+
+
+# ─── Xcode: user-specific schemes, breakpoints, snapshots ────────────
+*.xcuserstate
+*.xcscmblueprint
+*.xccheckout
+xcuserdata/
+SyncSpace.xcodeproj/xcuserdata/
+SyncSpace.xcodeproj/project.xcworkspace/xcuserdata/
+*.xcworkspace/xcuserdata/
+
+# Keep shared schemes; ignore user-private ones
+!xcshareddata/
+!**/xcshareddata/**
+xcshareddata/WorkspaceSettings.xcsettings
+
+
+# ─── Xcode previews / playgrounds / timeline ─────────────────────────
+timeline.xctimeline
+playground.xcworkspace
+*.playground/
+*.playgroundbook/
+
+# Xcode 26 thumbnails / preview cache (not portable across machines)
+**/.previews/
+**/Previews/
+**/.swiftui-preview-cache/
+
+
+# ─── Provisioning / signing artifacts (NEVER commit) ─────────────────
+*.mobileprovision
+*.provisionprofile
+*.p12
+*.pem
+*.key
+*.certSigningRequest
+*.cer
+
+
+# ─── Swift Package Manager ───────────────────────────────────────────
+.swiftpm/
+.build/
+Packages/
+Package.pins
+Package.resolved
+.netrc
+
+
+# ─── CocoaPods (in case it's ever added) ─────────────────────────────
+Pods/
+Podfile.lock
+
+
+# ─── Carthage ────────────────────────────────────────────────────────
+Carthage/Build/
+Carthage/Checkouts/
+
+
+# ─── fastlane ────────────────────────────────────────────────────────
+fastlane/report.xml
+fastlane/Preview.html
+fastlane/screenshots/**/*.png
+fastlane/test_output/
+
+
+# ─── Test coverage / profiling ───────────────────────────────────────
+*.xcresult/
+*.xccovreport
+*.xccovarchive
+*.profraw
+*.profdata
+*.gcda
+*.gcno
+
+
+# ─── Crash logs ──────────────────────────────────────────────────────
+*.crash
+*.ips
+
+
+# ─── Local environment overrides ─────────────────────────────────────
+.env
+.env.*
+*.local
+secrets.plist
+
+
+# ─── Editor / IDE noise ──────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.tags
+.tags1
+*.bak
+
+
+# ─── Claude Code / agent artifacts (local-only) ──────────────────────
+.claude/
+
+
+# ─── Optional: archives & exports ────────────────────────────────────
+*.xcarchive/
+*.ipa
+*.dSYM.zip
+*.dSYM/
+ExportOptions.plist
