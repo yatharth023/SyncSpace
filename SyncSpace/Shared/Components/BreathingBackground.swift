@@ -2,8 +2,9 @@
 //  BreathingBackground.swift
 //  SyncSpace
 //
-//  Soft animated gradient backdrop used across both apps. Cheap on the GPU:
-//  it's just two overlapping radial gradients drifting on slow timers.
+//  Calm ambient backdrop. Runs the drift accent at a low refresh rate
+//  (~10 FPS) with a smaller blur radius so it doesn't hot-loop the GPU
+//  while the user is scrolling.
 //
 
 import SwiftUI
@@ -11,85 +12,66 @@ import SwiftUI
 public struct BreathingBackground: View {
 
     public var palette: [Color]
-    public var intensity: Double = 0.7
-    public var pulse: Double
+    public var intensity: Double
+    public var animated: Bool
 
     public init(
         palette: [Color] = [AppTheme.electricIndigo, AppTheme.cyan, AppTheme.plum],
-        intensity: Double = 0.7,
-        pulse: Double
+        intensity: Double = 0.45,
+        animated: Bool = true
     ) {
         self.palette = palette
         self.intensity = intensity
-        self.pulse = pulse
+        self.animated = animated
     }
 
     public var body: some View {
-        GeometryReader { proxy in
-            ZStack {
-                Color.black.opacity(0.96)
-                Color(white: 0.04)
+        ZStack {
+            LinearGradient(
+                colors: [
+                    palette[0].opacity(0.10 * intensity),
+                    palette[1].opacity(0.06 * intensity),
+                    .clear
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
 
-                Circle()
-                    .fill(
-                        RadialGradient(
-                            colors: [palette[0].opacity(0.55 * intensity), .clear],
-                            center: .center,
-                            startRadius: 10,
-                            endRadius: proxy.size.width * 0.6
-                        )
-                    )
-                    .frame(width: proxy.size.width * 0.9, height: proxy.size.width * 0.9)
-                    .offset(
-                        x: -proxy.size.width * 0.15 + CGFloat(sin(pulse * .pi * 2)) * 20,
-                        y: -proxy.size.height * 0.10 + CGFloat(cos(pulse * .pi * 2)) * 20
-                    )
-                    .blur(radius: 40)
-
-                Circle()
-                    .fill(
-                        RadialGradient(
-                            colors: [palette[1].opacity(0.45 * intensity), .clear],
-                            center: .center,
-                            startRadius: 10,
-                            endRadius: proxy.size.width * 0.55
-                        )
-                    )
-                    .frame(width: proxy.size.width * 0.7, height: proxy.size.width * 0.7)
-                    .offset(
-                        x: proxy.size.width * 0.20 + CGFloat(cos(pulse * .pi * 2)) * 24,
-                        y: proxy.size.height * 0.15 - CGFloat(sin(pulse * .pi * 2)) * 24
-                    )
-                    .blur(radius: 50)
-
-                Circle()
-                    .fill(
-                        RadialGradient(
-                            colors: [palette[safe: 2]?.opacity(0.35 * intensity) ?? .clear, .clear],
-                            center: .center,
-                            startRadius: 5,
-                            endRadius: proxy.size.width * 0.45
-                        )
-                    )
-                    .frame(width: proxy.size.width * 0.55, height: proxy.size.width * 0.55)
-                    .offset(
-                        x: proxy.size.width * 0.05,
-                        y: proxy.size.height * 0.35 + CGFloat(sin(pulse * .pi * 2 + 1)) * 14
-                    )
-                    .blur(radius: 60)
+            if animated {
+                TimelineView(.animation(minimumInterval: 1.0 / 10.0, paused: false)) { ctx in
+                    let p = breathingPulse(at: ctx.date, period: 9)
+                    accent(pulse: p)
+                }
             }
-            .ignoresSafeArea()
         }
+        .ignoresSafeArea()
+        .allowsHitTesting(false)
     }
-}
 
-extension Array {
-    subscript(safe index: Int) -> Element? {
-        indices.contains(index) ? self[index] : nil
+    @ViewBuilder
+    private func accent(pulse: Double) -> some View {
+        Circle()
+            .fill(
+                RadialGradient(
+                    colors: [
+                        palette[0].opacity(0.14 * intensity + 0.06 * pulse * intensity),
+                        .clear
+                    ],
+                    center: .center,
+                    startRadius: 30,
+                    endRadius: 240
+                )
+            )
+            .blur(radius: 18)
+            .frame(width: 360, height: 360)
+            .offset(
+                x: CGFloat(sin(pulse * .pi)) * 24 - 60,
+                y: CGFloat(cos(pulse * .pi)) * 24 - 40
+            )
     }
 }
 
 #Preview {
-    BreathingBackground(pulse: 0.5)
+    BreathingBackground()
         .frame(width: 600, height: 600)
 }

@@ -2,13 +2,27 @@
 //  AudioEngineService.swift
 //  SyncSpace
 //
-//  AVAudioEngine-powered ambient mixer. Procedurally generates each channel
-//  using DSP (pink noise + filtering, sine partials, etc.) so the app ships
-//  without bundled assets. Each channel has its own AVAudioPlayerNode driving
-//  a continuous schedule of generated buffers.
+//  Ambient audio mixer. Five channels of procedurally-generated audio that
+//  loop seamlessly via AVAudioPlayerNode's `.loops` option.
 //
-//  Only the Mac runs this engine. The iPhone never produces audio; it just
-//  visualises the active mix it receives over MultipeerConnectivity.
+//  Design notes (why this version exists):
+//
+//   • The earlier version streamed 0.5s buffers and re-scheduled the next
+//     one from a MainActor hop inside the audio completion callback. When
+//     the main thread fell behind (e.g. during a slider drag), the next
+//     buffer would arrive late and the listener heard a dropout.
+//   • Volume changes used 12 enqueued `DispatchQueue.main.asyncAfter` blocks
+//     to "fade". With high-frequency slider drags, these stacked up and
+//     fought each other, producing audible jumps.
+//
+//  New behaviour:
+//
+//   • Each channel pre-renders a single ~10s loop buffer ONCE on start.
+//   • That buffer is scheduled with `.loops`; audio playback is then
+//     completely independent of the main thread. No callbacks, no glitches.
+//   • Volume changes write directly to `AVAudioMixerNode.outputVolume`
+//     which is parameter-smoothed by Core Audio at the sample level — no
+//     manual fade pump is needed.
 //
 
 import Foundation
@@ -26,6 +40,7 @@ public final class AudioEngineService {
     private let mainMixer: AVAudioMixerNode
     private var channels: [AudioTrack: Channel] = [:]
     private let format: AVAudioFormat
+    private let loopSeconds: Double = 10
 
     public init() {
         self.mainMixer = engine.mainMixerNode
@@ -40,9 +55,11 @@ public final class AudioEngineService {
             try installChannelsIfNeeded()
             engine.prepare()
             try engine.start()
-            channels.values.forEach { $0.player.play() }
-            for channel in channels.values { channel.scheduleNextBufferIfNeeded() }
+            for channel in channels.values {
+                channel.beginLoop()
+            }
             isRunning = true
+            lastError = nil
         } catch {
             lastError = "Audio engine failed: \(error.localizedDescription)"
             isRunning = false
@@ -51,29 +68,47 @@ public final class AudioEngineService {
 
     public func stop() {
         guard isRunning else { return }
-        channels.values.forEach { $0.player.stop() }
+        for channel in channels.values {
+            channel.player.stop()
+        }
         engine.stop()
         isRunning = false
     }
 
-    // MARK: Mixing
+    // MARK: Mixing — write straight to the per-channel mixer.
 
-    public func apply(_ mix: AudioMixState, fade: TimeInterval = 0.25) {
-        let master = mix.isMasterMuted ? 0 : mix.masterVolume
+    /// Apply the entire mix snapshot. Cheap: 5 immediate writes to AVAudioMixerNode.
+    public func apply(_ mix: AudioMixState) {
+        let master = effectiveMaster(mix)
         for track in AudioTrack.allCases {
-            let target = mix[track] * master
-            channels[track]?.setVolume(target, fade: fade)
+            channels[track]?.mixer.outputVolume = mix[track] * master
         }
     }
 
-    public func setVolume(_ value: Float, for track: AudioTrack, fade: TimeInterval = 0.1) {
-        channels[track]?.setVolume(value, fade: fade)
+    /// Update a single track. Used by the slider drag path so the other four
+    /// channels are not touched.
+    public func setVolume(_ value: Float, for track: AudioTrack, master: Float, muted: Bool) {
+        let mixerVolume = muted ? 0 : value * master
+        channels[track]?.mixer.outputVolume = max(0, min(1, mixerVolume))
+    }
+
+    /// Update only master gain across all channels without recomputing each.
+    public func setMasterVolume(_ value: Float, mix: AudioMixState) {
+        let master = mix.isMasterMuted ? 0 : max(0, min(1, value))
+        for track in AudioTrack.allCases {
+            channels[track]?.mixer.outputVolume = mix[track] * master
+        }
+    }
+
+    private func effectiveMaster(_ mix: AudioMixState) -> Float {
+        mix.isMasterMuted ? 0 : mix.masterVolume
     }
 
     // MARK: Channel install
 
     private func installChannelsIfNeeded() throws {
         guard channels.isEmpty else { return }
+        let frames = AVAudioFrameCount(loopSeconds * format.sampleRate)
         for track in AudioTrack.allCases {
             let player = AVAudioPlayerNode()
             let mixer = AVAudioMixerNode()
@@ -82,69 +117,80 @@ public final class AudioEngineService {
             engine.connect(player, to: mixer, format: format)
             engine.connect(mixer, to: mainMixer, format: format)
             mixer.outputVolume = 0
-            let channel = Channel(track: track, player: player, mixer: mixer, format: format)
-            channels[track] = channel
+
+            guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames) else {
+                throw NSError(domain: "syncspace.audio", code: 1)
+            }
+            buffer.frameLength = frames
+            LoopRenderer.render(track: track, into: buffer, sampleRate: format.sampleRate)
+            channels[track] = Channel(track: track, player: player, mixer: mixer, loop: buffer)
         }
     }
 }
 
 // MARK: - Channel
 
-@MainActor
 private final class Channel {
-
     let track: AudioTrack
     let player: AVAudioPlayerNode
     let mixer: AVAudioMixerNode
-    let format: AVAudioFormat
+    let loop: AVAudioPCMBuffer
 
-    private var generator: SignalGenerator
-    private var pendingBuffers: Int = 0
-    private let queue = DispatchQueue(label: "syncspace.audio.\(UUID().uuidString)", qos: .userInteractive)
-
-    init(track: AudioTrack, player: AVAudioPlayerNode, mixer: AVAudioMixerNode, format: AVAudioFormat) {
+    init(track: AudioTrack, player: AVAudioPlayerNode, mixer: AVAudioMixerNode, loop: AVAudioPCMBuffer) {
         self.track = track
         self.player = player
         self.mixer = mixer
-        self.format = format
-        self.generator = SignalGenerator(track: track, sampleRate: format.sampleRate)
+        self.loop = loop
     }
 
-    func setVolume(_ value: Float, fade: TimeInterval) {
-        let clamped = max(0, min(1, value))
-        if fade <= 0 {
-            mixer.outputVolume = clamped
-            return
+    func beginLoop() {
+        // `.loops` makes Core Audio repeat the buffer indefinitely with no
+        // main-thread involvement and no schedule callbacks.
+        player.scheduleBuffer(loop, at: nil, options: .loops, completionCallbackType: .dataPlayedBack) { _ in
+            // Intentionally empty — buffer loops forever; nothing to schedule.
         }
-        let steps = 12
-        let interval = fade / Double(steps)
-        let from = mixer.outputVolume
-        for step in 1...steps {
-            let progress = Float(step) / Float(steps)
-            let next = from + (clamped - from) * progress
-            DispatchQueue.main.asyncAfter(deadline: .now() + interval * Double(step)) { [weak self] in
-                self?.mixer.outputVolume = next
+        player.play()
+    }
+}
+
+// MARK: - Loop renderer
+//
+// Pre-renders one buffer per track. Crossfades the wrap-around for tracks
+// where a hard edge would be audible. Stateless once finished.
+
+private enum LoopRenderer {
+
+    static func render(track: AudioTrack, into buffer: AVAudioPCMBuffer, sampleRate: Double) {
+        guard let data = buffer.floatChannelData else { return }
+        let channelCount = Int(buffer.format.channelCount)
+        let frameCount = Int(buffer.frameLength)
+
+        var generator = SignalGenerator(track: track, sampleRate: sampleRate)
+        // Render the signal.
+        for frame in 0..<frameCount {
+            let sample = generator.nextSample()
+            for ch in 0..<channelCount {
+                data[ch][frame] = sample
             }
         }
-    }
 
-    func scheduleNextBufferIfNeeded() {
-        while pendingBuffers < 2 {
-            scheduleNextBuffer()
-        }
-    }
-
-    private func scheduleNextBuffer() {
-        let frames: AVAudioFrameCount = 22_050   // ~0.5s @ 44.1k
-        guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames) else { return }
-        buffer.frameLength = frames
-        generator.render(into: buffer)
-        pendingBuffers += 1
-        player.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { [weak self] _ in
-            guard let self else { return }
-            Task { @MainActor in
-                self.pendingBuffers -= 1
-                self.scheduleNextBufferIfNeeded()
+        // Apply equal-power crossfade on the boundary so the loop is seamless
+        // for tonal content. ~120ms is short enough to be inaudible but long
+        // enough to hide phase mismatch.
+        let fadeFrames = min(frameCount / 16, Int(0.12 * sampleRate))
+        if fadeFrames > 8 {
+            for i in 0..<fadeFrames {
+                let t = Float(i) / Float(fadeFrames)
+                let endIdx = frameCount - fadeFrames + i
+                let startIdx = i
+                let head = data[0][startIdx]
+                let tail = data[0][endIdx]
+                let blendedStart = head * t + tail * (1 - t)
+                let blendedEnd = head * (1 - t) + tail * t
+                for ch in 0..<channelCount {
+                    data[ch][startIdx] = blendedStart
+                    data[ch][endIdx] = blendedEnd
+                }
             }
         }
     }
@@ -158,49 +204,35 @@ private struct SignalGenerator {
     let sampleRate: Double
 
     // Track-specific state
-    private var pinkState = PinkNoise()
+    private var pink = PinkNoise()
     private var brownState: Float = 0
-    private var phase: Double = 0
-    private var phase2: Double = 0
-    private var phase3: Double = 0
     private var lpfState: Float = 0
     private var hpfState: Float = 0
-    private var crackleTimer: Int = 0
+    private var prevPink: Float = 0
+    private var phase: Double = 0
+    private var phase2: Double = 0
+    private var windPhase: Double = 0
+    private var chirpRemaining: Int = 0
+    private var clinkRemaining: Int = 0
     private var lofiTime: Double = 0
-    private var rng: SystemRandomNumberGenerator = SystemRandomNumberGenerator()
 
     init(track: AudioTrack, sampleRate: Double) {
         self.track = track
         self.sampleRate = sampleRate
     }
 
-    mutating func render(into buffer: AVAudioPCMBuffer) {
-        guard let data = buffer.floatChannelData else { return }
-        let channelCount = Int(buffer.format.channelCount)
-        let frameCount = Int(buffer.frameLength)
-
-        for frame in 0..<frameCount {
-            let sample: Float
-            switch track {
-            case .rain:        sample = renderRainSample()
-            case .whiteNoise:  sample = renderWhiteNoiseSample()
-            case .cafe:        sample = renderCafeSample()
-            case .forest:      sample = renderForestSample()
-            case .lofi:        sample = renderLoFiSample()
-            }
-            for ch in 0..<channelCount {
-                data[ch][frame] = sample
-            }
+    mutating func nextSample() -> Float {
+        switch track {
+        case .rain:        return rain()
+        case .whiteNoise:  return whiteNoise()
+        case .cafe:        return cafe()
+        case .forest:      return forest()
+        case .lofi:        return lofi()
         }
     }
 
-    // MARK: Per-track renderers
-
-    private mutating func renderRainSample() -> Float {
-        // Pink noise filtered through a soft low-pass for steady rainfall,
-        // plus occasional micro-impulses for distant drops.
-        var s = pinkState.next() * 0.6
-        // 1-pole low-pass.
+    private mutating func rain() -> Float {
+        var s = pink.next() * 0.6
         let alpha: Float = 0.18
         lpfState += alpha * (s - lpfState)
         s = lpfState
@@ -210,76 +242,63 @@ private struct SignalGenerator {
         return s * 0.7
     }
 
-    private mutating func renderWhiteNoiseSample() -> Float {
+    private mutating func whiteNoise() -> Float {
         Float.random(in: -1...1) * 0.4
     }
 
-    private mutating func renderCafeSample() -> Float {
-        // Brown noise base (low rumble) + pink chatter band-passed.
-        let white = Float.random(in: -1...1)
-        brownState = (brownState + 0.02 * white).clamped(to: -1...1)
+    private mutating func cafe() -> Float {
+        let w = Float.random(in: -1...1)
+        brownState = (brownState + 0.02 * w).clamped(to: -1...1)
         var rumble = brownState * 0.7
-        let pink = pinkState.next()
-        // High-pass the pink to emphasise mids (chatter).
+        let p = pink.next()
         let hpfAlpha: Float = 0.06
-        hpfState = hpfAlpha * (hpfState + pink - lpfState)
-        lpfState = pink
+        hpfState = hpfAlpha * (hpfState + p - prevPink)
+        prevPink = p
         let chatter = hpfState * 0.5
-        // Cup clink rare event.
-        crackleTimer -= 1
-        if crackleTimer <= 0, Int.random(in: 0..<8000) == 0 {
+        clinkRemaining -= 1
+        if clinkRemaining <= 0, Int.random(in: 0..<8000) == 0 {
             rumble += Float.random(in: -0.2...0.2)
-            crackleTimer = 200
+            clinkRemaining = 200
         }
         return (rumble + chatter) * 0.6
     }
 
-    private mutating func renderForestSample() -> Float {
-        // Filtered pink (wind) + sparse bird chirps as gated sines.
-        var wind = pinkState.next() * 0.5
+    private mutating func forest() -> Float {
+        var wind = pink.next() * 0.5
         let alpha: Float = 0.10
         lpfState += alpha * (wind - lpfState)
         wind = lpfState
-        // Wind gust modulation
-        phase += 2 * .pi * 0.07 / sampleRate
-        if phase > 2 * .pi { phase -= 2 * .pi }
-        wind *= Float(0.6 + 0.4 * sin(phase))
-        // Occasional bird-like chirp using a fast frequency sweep sine.
+        windPhase += 2 * .pi * 0.07 / sampleRate
+        if windPhase > 2 * .pi { windPhase -= 2 * .pi }
+        wind *= Float(0.6 + 0.4 * sin(windPhase))
         var chirp: Float = 0
-        if Int.random(in: 0..<24_000) == 0 { crackleTimer = 1200 }
-        if crackleTimer > 0 {
-            let t = Double(1200 - crackleTimer) / 1200.0
+        if Int.random(in: 0..<24_000) == 0 { chirpRemaining = 1200 }
+        if chirpRemaining > 0 {
+            let t = Double(1200 - chirpRemaining) / 1200.0
             let freq = 1800.0 + 600.0 * sin(t * 12)
             phase2 += 2 * .pi * freq / sampleRate
             chirp = Float(sin(phase2)) * Float(0.18 * (1 - t))
-            crackleTimer -= 1
+            chirpRemaining -= 1
         }
         return (wind * 0.9 + chirp) * 0.7
     }
 
-    private mutating func renderLoFiSample() -> Float {
-        // Layered sines forming a warm minor-7 chord + slow LFO + tape hiss.
+    private mutating func lofi() -> Float {
         lofiTime += 1.0 / sampleRate
-        let fundamental: Double = 110.0   // A2
-        let chord: [Double] = [1.0, 1.1892, 1.4983, 1.7818]  // ~root, m3, 5, m7
+        let fundamental: Double = 110.0
+        let chord: [Double] = [1.0, 1.1892, 1.4983, 1.7818]
         var s: Double = 0
         for (i, ratio) in chord.enumerated() {
             phase = 2 * .pi * fundamental * ratio * lofiTime
             let detune = 1.0 + 0.0015 * sin(2 * .pi * 0.13 * lofiTime + Double(i))
             s += sin(phase * detune) * 0.18 * (1 - Double(i) * 0.15)
         }
-        // Slow tremolo
         let trem = 0.85 + 0.15 * sin(2 * .pi * 0.25 * lofiTime)
         s *= trem
-        // Tape hiss
         s += Double.random(in: -0.05...0.05)
-        // Soft saturation
-        let driven = tanh(s * 1.2)
-        return Float(driven) * 0.55
+        return Float(tanh(s * 1.2)) * 0.55
     }
 }
-
-// MARK: - Pink noise (Paul Kellet's economy method)
 
 private struct PinkNoise {
     private var b0: Float = 0
@@ -303,8 +322,6 @@ private struct PinkNoise {
         return pink * 0.11
     }
 }
-
-// MARK: - utilities
 
 private extension Float {
     func clamped(to range: ClosedRange<Float>) -> Float {

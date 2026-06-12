@@ -2,7 +2,7 @@
 //  Theme.swift
 //  SyncSpace
 //
-//  Brand-level colors, gradients, and spacing primitives.
+//  Brand colors and signature gradients. Layout primitives live in `DS`.
 //
 
 import SwiftUI
@@ -31,27 +31,7 @@ public enum AppTheme {
         endPoint: .bottomTrailing
     )
 
-    public static let warmGradient = LinearGradient(
-        colors: [plum, electricIndigo.opacity(0.7), .black.opacity(0.4)],
-        startPoint: .top,
-        endPoint: .bottom
-    )
-
-    public static let runningGlow = RadialGradient(
-        colors: [electricIndigo.opacity(0.55), .clear],
-        center: .center,
-        startRadius: 4,
-        endRadius: 260
-    )
-
-    public static let completeGlow = RadialGradient(
-        colors: [mint.opacity(0.55), .clear],
-        center: .center,
-        startRadius: 4,
-        endRadius: 260
-    )
-
-    // Spacing
-    public static let cornerRadius: CGFloat = 22
-    public static let smallRadius: CGFloat = 12
+    // Legacy aliases — kept for previously-written call sites.
+    public static let cornerRadius: CGFloat = DS.Radius.lg
+    public static let smallRadius: CGFloat = DS.Radius.sm
 }

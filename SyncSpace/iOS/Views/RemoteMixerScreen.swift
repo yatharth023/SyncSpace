@@ -2,9 +2,6 @@
 //  RemoteMixerScreen.swift
 //  SyncSpace
 //
-//  Remote audio mixer for iPhone. Interactive sliders send unreliable
-//  updates so the Mac's audio engine tracks the gesture in real time.
-//
 
 #if os(iOS)
 import SwiftUI
@@ -14,15 +11,24 @@ struct RemoteMixerScreen: View {
 
     var body: some View {
         ScrollView {
-            VStack(spacing: 20) {
-                header
+            VStack(spacing: DS.Spacing.md) {
+                ScreenHeader(
+                    title: "Ambient Mix",
+                    subtitle: "Drag to blend. The Mac's engine updates instantly.",
+                    trailing: AnyView(
+                        ConnectionBadge(
+                            status: model.peerManager.status,
+                            peerNames: model.peerManager.connectedPeerNames,
+                            compact: true
+                        )
+                    )
+                )
 
-                VStack(spacing: 14) {
+                VStack(spacing: DS.Spacing.sm) {
                     ForEach(AudioTrack.allCases) { track in
                         TrackRow(
                             track: track,
                             level: model.mix[track],
-                            pulse: model.pulse,
                             isMasterMuted: model.mix.isMasterMuted,
                             onChange: { model.setVolume($0, for: track) }
                         )
@@ -31,34 +37,15 @@ struct RemoteMixerScreen: View {
 
                 masterBus
             }
-            .padding(.horizontal, 20)
-            .padding(.top, 20)
-            .padding(.bottom, 48)
+            .padding(.horizontal, DS.Spacing.md)
+            .padding(.top, DS.Spacing.md)
+            .padding(.bottom, DS.Spacing.xxl)
         }
         .scrollIndicators(.hidden)
     }
 
-    private var header: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack {
-                Text("Ambient Mix")
-                    .font(.title.weight(.bold))
-                Spacer()
-                ConnectionBadge(
-                    status: model.peerManager.status,
-                    peerNames: model.peerManager.connectedPeerNames,
-                    compact: true
-                )
-            }
-            Text("Drag to blend. The Mac's engine updates instantly.")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
     private var masterBus: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: DS.Spacing.sm) {
             HStack {
                 Label("Master", systemImage: model.mix.isMasterMuted ? "speaker.slash.fill" : "speaker.wave.3.fill")
                     .font(.headline)
@@ -69,20 +56,19 @@ struct RemoteMixerScreen: View {
                 } label: {
                     Text(model.mix.isMasterMuted ? "Unmute" : "Mute")
                         .font(.caption.weight(.semibold))
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 6)
+                        .padding(.horizontal, DS.Spacing.sm)
+                        .padding(.vertical, DS.Spacing.xs)
                         .background(
-                            Capsule().fill(model.mix.isMasterMuted ? AppTheme.error.opacity(0.3) : Color.white.opacity(0.1))
+                            Capsule().fill(model.mix.isMasterMuted ? AppTheme.error.opacity(0.22) : Color.primary.opacity(0.08))
                         )
                         .overlay(
-                            Capsule().stroke(model.mix.isMasterMuted ? AppTheme.error : .white.opacity(0.15), lineWidth: 1)
+                            Capsule().strokeBorder(model.mix.isMasterMuted ? AppTheme.error : Color.primary.opacity(0.12), lineWidth: 1)
                         )
-                        .foregroundStyle(.white)
+                        .foregroundStyle(.primary)
                 }
                 .buttonStyle(.plain)
             }
-
-            HStack(spacing: 10) {
+            HStack(spacing: DS.Spacing.xs) {
                 Image(systemName: "speaker.fill").foregroundStyle(.secondary)
                 Slider(value: Binding(
                     get: { Double(model.mix.masterVolume) },
@@ -92,7 +78,7 @@ struct RemoteMixerScreen: View {
                 Image(systemName: "speaker.wave.3.fill").foregroundStyle(.secondary)
             }
         }
-        .padding(18)
+        .padding(DS.Spacing.lg)
         .glassCard()
     }
 }
@@ -100,33 +86,29 @@ struct RemoteMixerScreen: View {
 private struct TrackRow: View {
     let track: AudioTrack
     let level: Float
-    let pulse: Double
     let isMasterMuted: Bool
     let onChange: (Float) -> Void
 
     var body: some View {
-        HStack(spacing: 16) {
+        HStack(spacing: DS.Spacing.md) {
             ZStack {
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .fill(track.tint.opacity(0.25))
-                    .frame(width: 56, height: 56)
+                RoundedRectangle(cornerRadius: DS.Radius.md, style: .continuous)
+                    .fill(track.tint.opacity(0.22))
+                    .frame(width: 52, height: 52)
                 Image(systemName: track.symbol)
                     .font(.system(size: 22, weight: .semibold))
                     .symbolRenderingMode(.hierarchical)
                     .foregroundStyle(track.tint)
-                    .symbolEffect(.pulse.byLayer, options: .repeating, value: level > 0.05)
+                    .symbolEffect(.pulse.byLayer, options: .repeating, isActive: level > 0.05)
             }
-            VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: DS.Spacing.xs) {
                 HStack {
                     VStack(alignment: .leading, spacing: 1) {
-                        Text(track.title)
-                            .font(.callout.weight(.semibold))
-                        Text(track.subtitle)
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
+                        Text(track.title).font(.callout.weight(.semibold))
+                        Text(track.subtitle).font(.caption2).foregroundStyle(.secondary)
                     }
                     Spacer()
-                    LevelMeter(level: isMasterMuted ? 0 : level, pulse: pulse, tint: track.tint, bars: 5)
+                    LevelMeter(level: isMasterMuted ? 0 : level, tint: track.tint, bars: 5)
                 }
                 Slider(value: Binding(
                     get: { Double(level) },
@@ -135,13 +117,13 @@ private struct TrackRow: View {
                 .tint(track.tint)
             }
         }
-        .padding(16)
-        .glassCard(cornerRadius: 18)
+        .padding(DS.Spacing.md)
+        .glassCard(cornerRadius: DS.Radius.md)
         .overlay(
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .stroke(level > 0.01 ? track.tint.opacity(0.4) : .clear, lineWidth: 1)
+            RoundedRectangle(cornerRadius: DS.Radius.md, style: .continuous)
+                .strokeBorder(level > 0.01 ? track.tint.opacity(0.40) : .clear, lineWidth: 1)
         )
-        .animation(.smooth(duration: 0.3), value: level > 0.01)
+        .animation(DS.Motion.calm, value: level > 0.01)
     }
 }
 #endif

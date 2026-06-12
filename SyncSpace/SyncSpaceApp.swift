@@ -2,9 +2,9 @@
 //  SyncSpaceApp.swift
 //  SyncSpace
 //
-//  Single multi-platform target. macOS launches the productivity hub
-//  (host); iOS launches the remote dashboard. The same AppModel runs on
-//  both, only its `role` and bound services differ.
+//  Single multi-platform target. macOS launches the productivity hub (host);
+//  iOS launches the remote dashboard. Theme is applied at the Scene root so
+//  every window reacts immediately to changes in Settings.
 //
 
 import SwiftUI
@@ -19,7 +19,6 @@ struct SyncSpaceApp: App {
         do {
             return try ModelContainer(for: schema, configurations: [configuration])
         } catch {
-            // SwiftData failure: fall back to in-memory so the UI is still usable.
             let fallback = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
             return (try? ModelContainer(for: schema, configurations: [fallback]))
                 ?? (try! ModelContainer(for: schema))
@@ -38,6 +37,7 @@ struct SyncSpaceApp: App {
         WindowGroup {
             RootView(model: model)
                 .modelContainer(modelContainer)
+                .appearancePreference()
                 .task {
                     #if os(macOS)
                     model.attach(modelContext: modelContainer.mainContext)
@@ -75,8 +75,7 @@ private struct RootView: View {
         #elseif os(iOS)
         iOSRootView(model: model)
         #else
-        Text("SyncSpace is available on macOS and iOS.")
-            .padding()
+        Text("SyncSpace is available on macOS and iOS.").padding()
         #endif
     }
 }

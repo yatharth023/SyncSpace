@@ -2,13 +2,17 @@
 //  ConnectionBadge.swift
 //  SyncSpace
 //
+//  Compact connection-status badge. The pulse ring only animates when
+//  actually connected — previously it was animating in every state, which
+//  forced layout work even while disconnected.
+//
 
 import SwiftUI
 
 public struct ConnectionBadge: View {
     public let status: ConnectionStatus
     public let peerNames: [String]
-    public var compact: Bool = false
+    public var compact: Bool
 
     public init(status: ConnectionStatus, peerNames: [String], compact: Bool = false) {
         self.status = status
@@ -17,55 +21,57 @@ public struct ConnectionBadge: View {
     }
 
     public var body: some View {
-        HStack(spacing: 8) {
-            Circle()
-                .fill(status.tint)
-                .frame(width: 8, height: 8)
-                .overlay(
-                    Circle()
-                        .stroke(status.tint.opacity(0.4), lineWidth: 1)
-                        .scaleEffect(status == .connected ? 1.8 : 1.0)
-                        .opacity(status == .connected ? 0 : 1)
-                        .animation(
-                            .easeOut(duration: 1.4).repeatForever(autoreverses: false),
-                            value: status
-                        )
-                )
+        HStack(spacing: compact ? DS.Spacing.xs : DS.Spacing.sm) {
+            indicator
 
             if !compact {
                 VStack(alignment: .leading, spacing: 1) {
                     Text(status.title)
                         .font(.caption.weight(.semibold))
-                    if status == .connected, let name = peerNames.first {
-                        Text(name)
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    } else if status != .connected {
-                        Text(secondaryText)
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
+                    Text(secondaryText)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
                 }
                 .accessibilityElement(children: .combine)
             }
         }
-        .padding(.horizontal, compact ? 8 : 12)
-        .padding(.vertical, compact ? 6 : 8)
-        .background(
-            Capsule().fill(.ultraThinMaterial)
-        )
+        .padding(.horizontal, compact ? DS.Spacing.sm : DS.Spacing.md)
+        .padding(.vertical, compact ? DS.Spacing.xs : DS.Spacing.xs + 2)
+        .background(DS.Surface.chip, in: Capsule(style: .continuous))
         .overlay(
-            Capsule().stroke(status.tint.opacity(0.35), lineWidth: 1)
+            Capsule(style: .continuous)
+                .strokeBorder(status.tint.opacity(0.30), lineWidth: 1)
         )
+    }
+
+    @ViewBuilder
+    private var indicator: some View {
+        ZStack {
+            if status == .connected {
+                TimelineView(.animation(minimumInterval: 1.0 / 14.0, paused: false)) { ctx in
+                    let phase = sin(ctx.date.timeIntervalSinceReferenceDate * 2) * 0.5 + 0.5
+                    Circle()
+                        .stroke(status.tint.opacity(0.45 - 0.35 * phase), lineWidth: 1)
+                        .scaleEffect(1 + phase * 0.9)
+                        .frame(width: 8, height: 8)
+                }
+            }
+            Circle()
+                .fill(status.tint)
+                .frame(width: 8, height: 8)
+        }
+        .frame(width: 14, height: 14)
     }
 
     private var secondaryText: String {
         switch status {
-        case .offline:      return "Tap to connect"
-        case .advertising:  return "Waiting for iPhone"
-        case .browsing:     return "Looking for Mac"
-        case .connecting:   return "Linking…"
-        case .connected:    return "Synced"
+        case .connected:     return peerNames.first ?? "Synced"
+        case .offline:       return "Tap to connect"
+        case .advertising:   return "Waiting for iPhone"
+        case .browsing:      return "Looking for Mac"
+        case .connecting:    return "Linking…"
+        case .reconnecting:  return "Reconnecting…"
         }
     }
 }

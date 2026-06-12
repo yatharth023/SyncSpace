@@ -2,8 +2,9 @@
 //  AudioMixerScreen.swift
 //  SyncSpace
 //
-//  Professional ambient mixer. Each track has a level meter, vertical
-//  fader, mute toggle, and tint. Changes broadcast to iPhone in real time.
+//  Mac mixer. Bindings write straight into AppModel.setVolume which writes
+//  directly to AVAudioMixerNode.outputVolume — no fades, no schedulers, no
+//  buffer thrashing. Slider drags are now glitch-free.
 //
 
 #if os(macOS)
@@ -14,46 +15,38 @@ struct AudioMixerScreen: View {
 
     var body: some View {
         ScrollView {
-            VStack(spacing: 28) {
-                header
+            VStack(spacing: DS.Spacing.xl) {
+                ScreenHeader(
+                    title: "Audio Mixer",
+                    subtitle: "Blend layered ambient soundscapes. Each fader drives a continuous channel and mirrors instantly on iPhone."
+                )
+
                 channelStrip
                 masterBus
             }
-            .padding(36)
-            .frame(maxWidth: 980)
+            .padding(.horizontal, DS.Spacing.xl)
+            .padding(.top, DS.Spacing.lg)
+            .padding(.bottom, DS.Spacing.xxl)
+            .frame(maxWidth: 1000)
             .frame(maxWidth: .infinity)
         }
         .onAppear {
             model.audioEngine?.start()
-            model.audioEngine?.apply(model.mix, fade: 0)
+            model.audioEngine?.apply(model.mix)
         }
-    }
-
-    private var header: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("Ambient Mixer")
-                .font(.largeTitle.weight(.bold))
-            Text("Blend layered soundscapes. Each fader drives a procedurally-generated channel and mirrors instantly on iPhone.")
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: 680, alignment: .leading)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var channelStrip: some View {
-        HStack(alignment: .top, spacing: 14) {
+        HStack(alignment: .top, spacing: DS.Spacing.sm) {
             ForEach(AudioTrack.allCases) { track in
                 MixerChannel(
                     track: track,
                     level: model.mix[track],
-                    pulse: model.pulse,
                     isMasterMuted: model.mix.isMasterMuted,
-                    onChange: { value in
-                        model.setVolume(value, for: track)
-                    },
+                    onChange: { value in model.setVolume(value, for: track) },
                     onToggleMute: {
-                        let isCurrentlyAudible = model.mix[track] > 0.01
-                        model.setVolume(isCurrentlyAudible ? 0 : 0.6, for: track)
+                        let audible = model.mix[track] > 0.01
+                        model.setVolume(audible ? 0 : 0.6, for: track)
                     }
                 )
             }
@@ -61,93 +54,80 @@ struct AudioMixerScreen: View {
     }
 
     private var masterBus: some View {
-        HStack(spacing: 24) {
-            VStack(alignment: .leading, spacing: 4) {
+        HStack(spacing: DS.Spacing.lg) {
+            VStack(alignment: .leading, spacing: DS.Spacing.xxs) {
                 Label("Master Bus", systemImage: "speaker.wave.3.fill")
                     .font(.headline)
-                Text("Global volume and quick mute")
+                Text("Global volume and mute")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
             Spacer()
-
-            HStack(spacing: 12) {
-                Image(systemName: "speaker.fill")
-                    .foregroundStyle(.secondary)
+            HStack(spacing: DS.Spacing.sm) {
+                Image(systemName: "speaker.fill").foregroundStyle(.secondary)
                 Slider(value: Binding(
                     get: { Double(model.mix.masterVolume) },
                     set: { model.setMasterVolume(Float($0)) }
                 ), in: 0...1)
                 .tint(AppTheme.accent)
-                .frame(width: 260)
-                Image(systemName: "speaker.wave.3.fill")
-                    .foregroundStyle(.secondary)
+                .frame(width: 240)
+                Image(systemName: "speaker.wave.3.fill").foregroundStyle(.secondary)
             }
-
             Button {
                 model.toggleMasterMute()
             } label: {
-                HStack(spacing: 8) {
+                HStack(spacing: DS.Spacing.xs) {
                     Image(systemName: model.mix.isMasterMuted ? "speaker.slash.fill" : "speaker.wave.3.fill")
                     Text(model.mix.isMasterMuted ? "Muted" : "Mute")
                 }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 10)
+                .padding(.horizontal, DS.Spacing.md)
+                .padding(.vertical, DS.Spacing.sm)
                 .background(
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .fill(model.mix.isMasterMuted ? AppTheme.error.opacity(0.3) : Color.white.opacity(0.08))
+                    RoundedRectangle(cornerRadius: DS.Radius.sm, style: .continuous)
+                        .fill(model.mix.isMasterMuted ? AppTheme.error.opacity(0.22) : Color.primary.opacity(0.05))
                 )
                 .overlay(
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .stroke(model.mix.isMasterMuted ? AppTheme.error : .white.opacity(0.15), lineWidth: 1)
+                    RoundedRectangle(cornerRadius: DS.Radius.sm, style: .continuous)
+                        .strokeBorder(model.mix.isMasterMuted ? AppTheme.error : Color.primary.opacity(0.10), lineWidth: 1)
                 )
             }
             .buttonStyle(.plain)
         }
-        .padding(22)
+        .padding(DS.Spacing.lg)
         .glassCard()
     }
 }
 
+// MARK: - Mixer channel
+
 private struct MixerChannel: View {
     let track: AudioTrack
     let level: Float
-    let pulse: Double
     let isMasterMuted: Bool
     let onChange: (Float) -> Void
     let onToggleMute: () -> Void
 
     var body: some View {
-        VStack(spacing: 14) {
-            // Icon header
+        VStack(spacing: DS.Spacing.sm) {
             ZStack {
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .fill(track.tint.opacity(0.25))
-                    .frame(height: 70)
+                RoundedRectangle(cornerRadius: DS.Radius.md, style: .continuous)
+                    .fill(track.tint.opacity(0.20))
+                    .frame(height: 64)
                 Image(systemName: track.symbol)
                     .symbolRenderingMode(.hierarchical)
-                    .font(.system(size: 28))
+                    .font(.system(size: 26))
                     .foregroundStyle(track.tint)
-                    .symbolEffect(.pulse.byLayer, options: .repeating, value: level > 0.05)
+                    .symbolEffect(.pulse.byLayer, options: .repeating, isActive: level > 0.05)
             }
 
-            Text(track.title)
-                .font(.callout.weight(.semibold))
-            Text(track.subtitle)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .lineLimit(1)
+            VStack(spacing: 2) {
+                Text(track.title).font(.callout.weight(.semibold))
+                Text(track.subtitle).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+            }
 
-            // Level meter
-            LevelMeter(
-                level: isMasterMuted ? 0 : level,
-                pulse: pulse,
-                tint: track.tint
-            )
-            .frame(height: 60)
+            LevelMeter(level: isMasterMuted ? 0 : level, tint: track.tint)
+                .frame(height: 52)
 
-            // Vertical fader
             VerticalFader(
                 value: Binding(
                     get: { Double(level) },
@@ -160,27 +140,29 @@ private struct MixerChannel: View {
             Text("\(Int(level * 100))")
                 .font(.caption.weight(.semibold))
                 .monospacedDigit()
-                .foregroundStyle(level > 0.01 ? .white : .secondary)
+                .foregroundStyle(level > 0.01 ? .primary : .secondary)
 
             Button(action: onToggleMute) {
                 Image(systemName: level > 0.01 ? "speaker.wave.2.fill" : "speaker.slash.fill")
-                    .foregroundStyle(level > 0.01 ? .white : .secondary)
-                    .padding(8)
-                    .background(Circle().fill(Color.white.opacity(0.08)))
+                    .foregroundStyle(level > 0.01 ? .primary : .secondary)
+                    .padding(DS.Spacing.xs)
+                    .background(Circle().fill(Color.primary.opacity(0.06)))
             }
             .buttonStyle(.plain)
         }
-        .padding(.vertical, 20)
-        .padding(.horizontal, 16)
+        .padding(.vertical, DS.Spacing.lg - 4)
+        .padding(.horizontal, DS.Spacing.md)
         .frame(minWidth: 140)
         .glassCard()
         .overlay(
-            RoundedRectangle(cornerRadius: AppTheme.cornerRadius, style: .continuous)
-                .stroke(level > 0.01 ? track.tint.opacity(0.4) : .clear, lineWidth: 1)
+            RoundedRectangle(cornerRadius: DS.Radius.lg, style: .continuous)
+                .strokeBorder(level > 0.01 ? track.tint.opacity(0.40) : .clear, lineWidth: 1)
         )
-        .animation(.smooth(duration: 0.3), value: level > 0.01)
+        .animation(DS.Motion.calm, value: level > 0.01)
     }
 }
+
+// MARK: - Vertical fader
 
 private struct VerticalFader: View {
     @Binding var value: Double
@@ -188,15 +170,13 @@ private struct VerticalFader: View {
 
     var body: some View {
         GeometryReader { proxy in
-            let height = proxy.size.height
-            let position = CGFloat(1 - value) * height
+            let h = proxy.size.height
+            let position = CGFloat(1 - value) * h
             ZStack(alignment: .bottom) {
-                // Track
                 Capsule()
-                    .fill(Color.white.opacity(0.10))
+                    .fill(Color.primary.opacity(0.10))
                     .frame(width: 6)
                     .frame(maxHeight: .infinity)
-                // Filled portion
                 Capsule()
                     .fill(
                         LinearGradient(
@@ -205,25 +185,20 @@ private struct VerticalFader: View {
                             endPoint: .bottom
                         )
                     )
-                    .frame(width: 6, height: CGFloat(value) * height)
-                    .animation(.smooth(duration: 0.1), value: value)
-                // Knob
+                    .frame(width: 6, height: CGFloat(value) * h)
                 Circle()
-                    .fill(.white)
+                    .fill(Color.white)
                     .frame(width: 22, height: 22)
-                    .shadow(color: tint.opacity(0.7), radius: 6)
-                    .overlay(
-                        Circle().stroke(tint, lineWidth: 2)
-                    )
+                    .shadow(color: tint.opacity(0.55), radius: 6)
+                    .overlay(Circle().strokeBorder(tint, lineWidth: 2))
                     .position(x: proxy.size.width / 2, y: position)
             }
             .contentShape(Rectangle())
             .gesture(
                 DragGesture(minimumDistance: 0)
-                    .onChanged { gesture in
-                        let raw = 1 - (gesture.location.y / height)
-                        let clamped = max(0, min(1, Double(raw)))
-                        value = clamped
+                    .onChanged { g in
+                        let raw = 1 - (g.location.y / h)
+                        value = max(0, min(1, Double(raw)))
                     }
             )
         }

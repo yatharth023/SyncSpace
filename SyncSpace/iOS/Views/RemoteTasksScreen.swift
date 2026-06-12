@@ -2,9 +2,6 @@
 //  RemoteTasksScreen.swift
 //  SyncSpace
 //
-//  Tasks tab for iPhone. Adds, toggles, deletes all reflect on the Mac
-//  immediately.
-//
 
 #if os(iOS)
 import SwiftUI
@@ -16,12 +13,22 @@ struct RemoteTasksScreen: View {
 
     var body: some View {
         ScrollView {
-            VStack(spacing: 20) {
-                header
+            VStack(spacing: DS.Spacing.md) {
+                ScreenHeader(
+                    title: "Tasks",
+                    subtitle: "\(model.tasks.filter { !$0.isCompleted }.count) open · \(model.tasks.filter { $0.isCompleted }.count) done",
+                    trailing: AnyView(
+                        ConnectionBadge(
+                            status: model.peerManager.status,
+                            peerNames: model.peerManager.connectedPeerNames,
+                            compact: true
+                        )
+                    )
+                )
 
                 composer
 
-                VStack(spacing: 10) {
+                LazyVStack(spacing: DS.Spacing.sm) {
                     if model.tasks.isEmpty {
                         emptyState
                     } else {
@@ -41,34 +48,16 @@ struct RemoteTasksScreen: View {
                     }
                 }
             }
-            .padding(.horizontal, 20)
-            .padding(.top, 20)
-            .padding(.bottom, 48)
+            .padding(.horizontal, DS.Spacing.md)
+            .padding(.top, DS.Spacing.md)
+            .padding(.bottom, DS.Spacing.xxl)
         }
         .scrollIndicators(.hidden)
     }
 
-    private var header: some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Tasks").font(.title.weight(.bold))
-                Text("\(model.tasks.filter { !$0.isCompleted }.count) open · \(model.tasks.filter { $0.isCompleted }.count) done")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            Spacer()
-            ConnectionBadge(
-                status: model.peerManager.status,
-                peerNames: model.peerManager.connectedPeerNames,
-                compact: true
-            )
-        }
-    }
-
     private var composer: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "plus.circle.fill")
-                .foregroundStyle(AppTheme.accent)
+        HStack(spacing: DS.Spacing.sm) {
+            Image(systemName: "plus.circle.fill").foregroundStyle(AppTheme.accent)
             TextField("Add a focus task…", text: $newTitle)
                 .focused($composerFocused)
                 .submitLabel(.done)
@@ -79,23 +68,22 @@ struct RemoteTasksScreen: View {
                     .tint(AppTheme.accent)
             }
         }
-        .padding(14)
-        .glassCard(cornerRadius: 18)
+        .padding(DS.Spacing.md)
+        .glassCard(cornerRadius: DS.Radius.md)
     }
 
     private var emptyState: some View {
-        VStack(spacing: 8) {
+        VStack(spacing: DS.Spacing.xs) {
             Image(systemName: "sparkles")
                 .font(.system(size: 30))
                 .foregroundStyle(AppTheme.accent)
-            Text("No tasks yet")
-                .font(.headline)
+            Text("No tasks yet").font(.headline)
             Text("Add tasks here or on the Mac. They sync instantly.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
         }
-        .padding(28)
+        .padding(DS.Spacing.xl)
         .frame(maxWidth: .infinity)
         .glassCard()
     }
@@ -113,11 +101,11 @@ private struct TaskCard: View {
     let onDelete: () -> Void
 
     var body: some View {
-        HStack(spacing: 14) {
+        HStack(spacing: DS.Spacing.sm) {
             Button(action: onToggle) {
                 ZStack {
                     Circle()
-                        .stroke(task.isCompleted ? AppTheme.mint : .white.opacity(0.3), lineWidth: 1.6)
+                        .strokeBorder(task.isCompleted ? AppTheme.mint : Color.primary.opacity(0.30), lineWidth: 1.6)
                         .frame(width: 26, height: 26)
                     if task.isCompleted {
                         Image(systemName: "checkmark")
@@ -127,7 +115,6 @@ private struct TaskCard: View {
                 }
             }
             .buttonStyle(.plain)
-
             VStack(alignment: .leading, spacing: 2) {
                 Text(task.title)
                     .strikethrough(task.isCompleted, color: .secondary)
@@ -136,11 +123,10 @@ private struct TaskCard: View {
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
-
             Spacer()
         }
-        .padding(16)
-        .glassCard(cornerRadius: 18)
+        .padding(DS.Spacing.md)
+        .glassCard(cornerRadius: DS.Radius.md)
         .swipeActions(edge: .trailing) {
             Button(role: .destructive, action: onDelete) {
                 Label("Delete", systemImage: "trash")

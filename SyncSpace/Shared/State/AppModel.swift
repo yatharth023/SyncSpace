@@ -35,12 +35,13 @@ public final class AppModel {
 
     // MARK: Local-only state
 
-    public private(set) var pulse: Double = 0       // continuous breathing 0...1
-    public private(set) var todayFocusSeconds: TimeInterval = 0
-    public private(set) var sessionsToday: Int = 0
-    public private(set) var currentStreakDays: Int = 0
-    public private(set) var weekFocusSeconds: TimeInterval = 0
-    public private(set) var monthFocusSeconds: TimeInterval = 0
+    // On the host these are recomputed from SwiftData via `recalcAnalytics`.
+    // On the remote they are written from `.analyticsSnapshot` messages.
+    public internal(set) var todayFocusSeconds: TimeInterval = 0
+    public internal(set) var sessionsToday: Int = 0
+    public internal(set) var currentStreakDays: Int = 0
+    public internal(set) var weekFocusSeconds: TimeInterval = 0
+    public internal(set) var monthFocusSeconds: TimeInterval = 0
 
     // MARK: Services
 
@@ -57,8 +58,12 @@ public final class AppModel {
     // MARK: Private
 
     private var tickTask: Task<Void, Never>?
-    private var pulseTask: Task<Void, Never>?
     private var sessionStartedAt: Date?
+
+    // MARK: Completion event (drives the completion sheet)
+
+    public var lastCompletedSession: SessionType?
+    public var lastCompletionAt: Date?
 
     // MARK: Init
 
@@ -71,7 +76,9 @@ public final class AppModel {
         self.peerManager.onReceiveMessage = { [weak self] msg in
             self?.handleIncoming(msg)
         }
-        startPulse()
+        self.peerManager.onConnect = { [weak self] in
+            self?.handleConnect()
+        }
     }
 
     public func attach(modelContext: ModelContext) {
@@ -83,39 +90,44 @@ public final class AppModel {
 
     public func startNetworking() {
         peerManager.start()
-        if role == .remote {
-            // Remote asks for an initial snapshot once the host accepts the link.
-            Task { @MainActor in
-                try? await Task.sleep(nanoseconds: 600_000_000)
-                _ = peerManager.send(.requestSnapshot)
-            }
+    }
+
+    /// Called when the MC session transitions to `.connected`. Host broadcasts
+    /// a full snapshot so the remote's UI is correct from the first frame.
+    /// Remote sends `.requestSnapshot` as belt-and-braces in case the host
+    /// callback fires before its delegate is fully wired.
+    private func handleConnect() {
+        if isHost {
+            broadcastFullSnapshot()
+        } else {
+            peerManager.send(.requestSnapshot)
         }
+    }
+
+    private func broadcastFullSnapshot() {
+        peerManager.send(.timerUpdate(timer))
+        peerManager.send(.audioUpdate(mix))
+        peerManager.send(.taskSnapshot(tasks))
+        peerManager.send(.analyticsSnapshot(currentAnalyticsSnapshot()))
+    }
+
+    private func currentAnalyticsSnapshot() -> AnalyticsSnapshot {
+        AnalyticsSnapshot(
+            today: todayFocusSeconds,
+            week: weekFocusSeconds,
+            month: monthFocusSeconds,
+            sessionsToday: sessionsToday,
+            streak: currentStreakDays
+        )
     }
 
     public func startAudio() {
         audioEngine?.start()
-        audioEngine?.apply(mix, fade: 0)
+        audioEngine?.apply(mix)
     }
 
     public func stopAudio() {
         audioEngine?.stop()
-    }
-
-    // MARK: Pulse / breathing animation source
-
-    private func startPulse() {
-        pulseTask?.cancel()
-        pulseTask = Task { [weak self] in
-            var t: Double = 0
-            while !Task.isCancelled {
-                t += 1.0 / 30.0
-                let value = (sin(t * 1.4) + 1) * 0.5
-                await MainActor.run {
-                    self?.pulse = value
-                }
-                try? await Task.sleep(nanoseconds: 33_000_000)
-            }
-        }
     }
 
     // MARK: Timer (host-authoritative)
@@ -200,11 +212,11 @@ public final class AppModel {
     private func scheduleTick() {
         cancelTick()
         tickTask = Task { [weak self] in
+            // 1Hz on the model is enough — the UI uses TimelineView at higher
+            // rate to smoothly interpolate the displayed seconds.
             while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 200_000_000)
-                await MainActor.run {
-                    self?.tick()
-                }
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                await MainActor.run { self?.tick() }
             }
         }
     }
@@ -224,7 +236,6 @@ public final class AppModel {
             completeSession(wasInterrupted: false)
             return
         }
-        // Throttle network updates: only broadcast ~twice a second.
         broadcastTimer()
     }
 
@@ -256,10 +267,52 @@ public final class AppModel {
                 sessionTypeID: type.id
             ))
             recalcAnalytics()
+            // Broadcast the updated analytics so the remote's stat cards
+            // stay current without polling.
+            peerManager.send(.analyticsSnapshot(currentAnalyticsSnapshot()))
         }
 
         sessionStartedAt = nil
         if hapticsEnabled { HapticManager.shared.trigger(.sessionCompleted) }
+
+        // Trigger the completion experience for a natural finish only —
+        // skipped sessions don't pop the sheet.
+        if !wasInterrupted {
+            lastCompletedSession = type
+            lastCompletionAt = .now
+            if soundOnComplete {
+                NotificationService.playCompletionSound()
+            }
+            Task { await NotificationService.notifyCompletion(of: type) }
+        }
+    }
+
+    // MARK: Completion sheet helpers
+
+    public func dismissCompletion() {
+        lastCompletedSession = nil
+    }
+
+    public func startBreakAfterCompletion(minutes: Int = 5) {
+        guard isHost else {
+            peerManager.send(.command(.selectSession(.custom(seconds: minutes * 60))))
+            return
+        }
+        selectSession(.custom(seconds: minutes * 60))
+        startTimer()
+        dismissCompletion()
+    }
+
+    public func restartLastSession() {
+        guard let type = lastCompletedSession else { return }
+        if isHost {
+            selectSession(type)
+            startTimer()
+        } else {
+            peerManager.send(.command(.selectSession(type)))
+            peerManager.send(.command(.startTimer))
+        }
+        dismissCompletion()
     }
 
     private func broadcastTimer() {
@@ -270,29 +323,36 @@ public final class AppModel {
     // MARK: Audio mix
 
     public func setVolume(_ value: Float, for track: AudioTrack) {
-        mix[track] = value
+        let clamped = max(0, min(1, value))
+        mix[track] = clamped
         if isHost {
-            audioEngine?.apply(mix, fade: 0.05)
+            audioEngine?.setVolume(
+                clamped,
+                for: track,
+                master: mix.masterVolume,
+                muted: mix.isMasterMuted
+            )
             peerManager.sendUnreliable(.audioUpdate(mix))
         } else {
-            peerManager.sendUnreliable(.command(.setTrackVolume(track: track, value: value)))
+            peerManager.sendUnreliable(.command(.setTrackVolume(track: track, value: clamped)))
         }
     }
 
     public func setMasterVolume(_ value: Float) {
-        mix.masterVolume = max(0, min(1, value))
+        let clamped = max(0, min(1, value))
+        mix.masterVolume = clamped
         if isHost {
-            audioEngine?.apply(mix, fade: 0.05)
+            audioEngine?.setMasterVolume(clamped, mix: mix)
             peerManager.sendUnreliable(.audioUpdate(mix))
         } else {
-            peerManager.sendUnreliable(.command(.setMasterVolume(value)))
+            peerManager.sendUnreliable(.command(.setMasterVolume(clamped)))
         }
     }
 
     public func toggleMasterMute() {
         mix.isMasterMuted.toggle()
         if isHost {
-            audioEngine?.apply(mix, fade: 0.15)
+            audioEngine?.apply(mix)
             peerManager.send(.audioUpdate(mix))
         } else {
             peerManager.send(.command(.toggleMasterMute))
@@ -403,6 +463,49 @@ public final class AppModel {
         }
     }
 
+    // MARK: Session-history maintenance
+
+    public func clearSessionHistory() {
+        guard isHost, let context = modelContext else { return }
+        let descriptor = FetchDescriptor<SessionRecord>()
+        if let records = try? context.fetch(descriptor) {
+            records.forEach(context.delete)
+            try? context.save()
+            recalcAnalytics()
+        }
+    }
+
+    public func exportSessionHistory() throws -> URL {
+        guard isHost, let context = modelContext else {
+            throw NSError(domain: "syncspace.export", code: 0,
+                          userInfo: [NSLocalizedDescriptionKey: "Export only available on host."])
+        }
+        let descriptor = FetchDescriptor<SessionRecord>(sortBy: [SortDescriptor(\.completedAt, order: .reverse)])
+        let records = (try? context.fetch(descriptor)) ?? []
+        let payload = records.map { record -> [String: Any] in
+            [
+                "id": record.id.uuidString,
+                "sessionTypeID": record.sessionTypeID,
+                "sessionTitle": record.sessionTitle,
+                "startedAt": ISO8601DateFormatter().string(from: record.startedAt),
+                "completedAt": ISO8601DateFormatter().string(from: record.completedAt),
+                "plannedDuration": record.plannedDuration,
+                "actualDuration": record.actualDuration,
+                "tasksCompleted": record.tasksCompleted,
+                "wasInterrupted": record.wasInterrupted
+            ]
+        }
+        let data = try JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted])
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withFullDate]
+        let dateStr = formatter.string(from: .now)
+        let url = FileManager.default
+            .urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("SyncSpace-history-\(dateStr).json")
+        try data.write(to: url, options: .atomic)
+        return url
+    }
+
     // MARK: Analytics rollup
 
     public func recalcAnalytics() {
@@ -446,28 +549,35 @@ public final class AppModel {
         switch message {
         case .timerUpdate(let state):
             if !isHost { timer = state }
-        case .timerCompleted:
-            if !isHost, hapticsEnabled { HapticManager.shared.trigger(.sessionCompleted) }
+        case .timerCompleted(let type):
+            if !isHost {
+                if hapticsEnabled { HapticManager.shared.trigger(.sessionCompleted) }
+                lastCompletedSession = type
+                lastCompletionAt = .now
+                Task { await NotificationService.notifyCompletion(of: type) }
+            }
         case .audioUpdate(let state):
             if !isHost { mix = state }
         case .taskSnapshot(let items):
             if !isHost { tasks = items.sorted(by: { $0.sortIndex < $1.sortIndex }) }
+        case .analyticsSnapshot(let snap):
+            if !isHost {
+                todayFocusSeconds = snap.today
+                weekFocusSeconds = snap.week
+                monthFocusSeconds = snap.month
+                sessionsToday = snap.sessionsToday
+                currentStreakDays = snap.streak
+            }
         case .sessionRecorded:
             break
         case .requestSnapshot:
-            if isHost {
-                peerManager.send(.timerUpdate(timer))
-                peerManager.send(.audioUpdate(mix))
-                peerManager.send(.taskSnapshot(tasks))
-            }
+            if isHost { broadcastFullSnapshot() }
         case .command(let cmd):
             if isHost { execute(cmd) }
         case .handshake:
-            if isHost {
-                peerManager.send(.timerUpdate(timer))
-                peerManager.send(.audioUpdate(mix))
-                peerManager.send(.taskSnapshot(tasks))
-            }
+            if isHost { broadcastFullSnapshot() }
+        case .heartbeat:
+            break   // PeerManager already records the timestamp.
         }
     }
 

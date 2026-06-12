@@ -2,8 +2,8 @@
 //  FocusSessionScreen.swift
 //  SyncSpace
 //
-//  The hero screen of the Mac app. Circular timer, transport controls,
-//  preset chips, and a stats strip.
+//  Mac hero screen: ScreenHeader, circular timer, transport controls,
+//  preset chips, stats grid, upcoming-tasks block.
 //
 
 #if os(macOS)
@@ -15,25 +15,23 @@ struct FocusSessionScreen: View {
 
     var body: some View {
         ScrollView {
-            VStack(spacing: 36) {
-                presets
-                    .padding(.top, 12)
-
-                CircularTimerView(
-                    state: model.timer,
-                    pulse: model.pulse,
-                    diameter: 360
+            VStack(spacing: DS.Spacing.xl) {
+                ScreenHeader(
+                    title: "Focus Session",
+                    subtitle: "Stay present. Mac orchestrates everything; iPhone visualises."
                 )
-                .padding(.vertical, 12)
 
+                presets
+                CircularTimerView(state: model.timer, diameter: 320)
+                    .frame(maxWidth: .infinity)
                 transportControls
-
-                statsStrip
-
+                statsGrid
                 tasksPreview
             }
-            .padding(40)
-            .frame(maxWidth: 900)
+            .padding(.horizontal, DS.Spacing.xl)
+            .padding(.top, DS.Spacing.lg)
+            .padding(.bottom, DS.Spacing.xxl)
+            .frame(maxWidth: 920)
             .frame(maxWidth: .infinity)
         }
         .sheet(isPresented: $showCustomSheet) {
@@ -41,174 +39,210 @@ struct FocusSessionScreen: View {
         }
     }
 
-    private var presets: some View {
-        HStack(spacing: 12) {
-            ForEach(SessionType.presets) { preset in
-                presetChip(for: preset)
-            }
-            presetChip(for: .custom(seconds: model.customDurationMinutes * 60))
-                .onTapGesture { showCustomSheet = true }
-        }
-    }
+    // MARK: Presets
 
-    private func presetChip(for type: SessionType) -> some View {
-        let isSelected = type.id == model.timer.sessionType.id
-        let isCustom: Bool = if case .custom = type { true } else { false }
-        return Button {
-            if isCustom { showCustomSheet = true } else { model.selectSession(type) }
-        } label: {
-            HStack(spacing: 8) {
-                Image(systemName: type.symbol)
-                    .symbolRenderingMode(.hierarchical)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(type.title)
-                        .font(.callout.weight(.semibold))
-                    Text(TimeFormatter.minutesLabel(durationForChip(type)))
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
+    private var presets: some View {
+        HStack(spacing: DS.Spacing.sm) {
+            ForEach(SessionType.presets) { type in
+                PresetChip(
+                    type: type,
+                    duration: type.defaultDuration,
+                    isSelected: type.id == model.timer.sessionType.id
+                ) {
+                    model.selectSession(type)
                 }
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 10)
-            .background(
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .fill(isSelected ? AppTheme.accent.opacity(0.28) : Color.white.opacity(0.06))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .stroke(isSelected ? AppTheme.accent : .white.opacity(0.10), lineWidth: 1)
-            )
-            .foregroundStyle(.white)
+            PresetChip(
+                type: .custom(seconds: model.customDurationMinutes * 60),
+                duration: TimeInterval(model.customDurationMinutes * 60),
+                isSelected: { if case .custom = model.timer.sessionType { return true } else { return false } }()
+            ) {
+                showCustomSheet = true
+            }
         }
-        .buttonStyle(.plain)
-        .animation(.smooth(duration: 0.25), value: isSelected)
     }
 
-    private func durationForChip(_ type: SessionType) -> TimeInterval {
-        if case .custom = type {
-            return TimeInterval(model.customDurationMinutes * 60)
-        }
-        return type.defaultDuration
-    }
+    // MARK: Transport
 
     private var transportControls: some View {
-        HStack(spacing: 18) {
-            secondaryButton(systemName: "arrow.counterclockwise") { model.resetTimer() }
+        HStack(spacing: DS.Spacing.lg) {
+            SecondaryCircleButton(symbol: "arrow.counterclockwise") { model.resetTimer() }
                 .help("Reset")
-
-            Button {
-                if model.timer.isRunning {
-                    model.pauseTimer()
-                } else {
-                    model.startTimer()
-                }
-            } label: {
-                ZStack {
-                    Circle()
-                        .fill(AppTheme.sessionGradient)
-                        .frame(width: 86, height: 86)
-                        .shadow(color: AppTheme.electricIndigo.opacity(0.6), radius: 18)
-                    Image(systemName: model.timer.isRunning ? "pause.fill" : "play.fill")
-                        .font(.system(size: 28, weight: .semibold))
-                        .foregroundStyle(.white)
-                        .contentTransition(.symbolEffect(.replace))
-                }
-                .scaleEffect(1 + model.pulse * 0.025)
+            PrimaryTransportButton(isRunning: model.timer.isRunning) {
+                if model.timer.isRunning { model.pauseTimer() } else { model.startTimer() }
             }
-            .buttonStyle(.plain)
             .keyboardShortcut(.space, modifiers: [])
-            .help(model.timer.isRunning ? "Pause" : "Start")
-
-            secondaryButton(systemName: "forward.end.fill") { model.skipTimer() }
+            SecondaryCircleButton(symbol: "forward.end.fill") { model.skipTimer() }
                 .help("Skip")
         }
-        .padding(.top, 4)
     }
 
-    private func secondaryButton(systemName: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            ZStack {
-                Circle()
-                    .fill(.ultraThinMaterial)
-                    .frame(width: 60, height: 60)
-                Circle()
-                    .stroke(Color.white.opacity(0.1), lineWidth: 1)
-                    .frame(width: 60, height: 60)
-                Image(systemName: systemName)
-                    .font(.system(size: 17, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.85))
-            }
-        }
-        .buttonStyle(.plain)
-    }
+    // MARK: Stats
 
-    private var statsStrip: some View {
-        HStack(spacing: 14) {
-            statCard(title: "Today",   value: TimeFormatter.compact(model.todayFocusSeconds),
-                     subtitle: "Focus time",  symbol: "flame.fill", tint: AppTheme.warning)
-            statCard(title: "Sessions", value: "\(model.sessionsToday)",
-                     subtitle: "Completed",   symbol: "checkmark.seal.fill", tint: AppTheme.mint)
-            statCard(title: "Streak",  value: "\(model.currentStreakDays)d",
-                     subtitle: "Consecutive",  symbol: "bolt.fill", tint: AppTheme.cyan)
+    private var statsGrid: some View {
+        HStack(spacing: DS.Spacing.md) {
+            StatCard(title: "Today",
+                     value: TimeFormatter.compact(model.todayFocusSeconds),
+                     subtitle: "Focus time",
+                     symbol: "flame.fill",
+                     tint: AppTheme.warning)
+            StatCard(title: "Sessions",
+                     value: "\(model.sessionsToday)",
+                     subtitle: "Completed",
+                     symbol: "checkmark.seal.fill",
+                     tint: AppTheme.mint)
+            StatCard(title: "Streak",
+                     value: "\(model.currentStreakDays)d",
+                     subtitle: "Consecutive",
+                     symbol: "bolt.fill",
+                     tint: AppTheme.cyan)
         }
     }
 
-    private func statCard(title: String, value: String, subtitle: String, symbol: String, tint: Color) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack {
-                Image(systemName: symbol)
-                    .foregroundStyle(tint)
-                Text(title.uppercased())
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(.secondary)
-            }
-            Text(value)
-                .font(.system(size: 28, weight: .bold, design: .rounded))
-                .monospacedDigit()
-            Text(subtitle)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(18)
-        .glassCard()
-    }
+    // MARK: Up-next
 
     private var tasksPreview: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        let open = model.tasks.filter { !$0.isCompleted }
+        return VStack(alignment: .leading, spacing: DS.Spacing.sm) {
             HStack {
                 Text("Up next").font(.headline)
                 Spacer()
-                Text("\(model.tasks.filter { !$0.isCompleted }.count) open")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                Text("\(open.count) open").font(.caption).foregroundStyle(.secondary)
             }
-            if model.tasks.filter({ !$0.isCompleted }).isEmpty {
+            if open.isEmpty {
                 Text("Plan your next focus block by adding tasks in the Tasks tab.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(18)
+                    .padding(DS.Spacing.lg)
                     .glassCard()
             } else {
-                VStack(spacing: 8) {
-                    ForEach(model.tasks.filter { !$0.isCompleted }.prefix(3)) { task in
-                        HStack {
-                            Image(systemName: "circle")
-                                .foregroundStyle(.secondary)
+                VStack(spacing: DS.Spacing.xs) {
+                    ForEach(open.prefix(3)) { task in
+                        HStack(spacing: DS.Spacing.sm) {
+                            Image(systemName: "circle").foregroundStyle(.secondary)
                             Text(task.title)
                             Spacer()
                             Text(task.createdAt, style: .relative)
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
                         }
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 12)
-                        .glassCard(cornerRadius: 14)
+                        .padding(.horizontal, DS.Spacing.md)
+                        .padding(.vertical, DS.Spacing.sm + 2)
+                        .glassCard(cornerRadius: DS.Radius.md)
                     }
                 }
             }
         }
+    }
+}
+
+// MARK: - Subcomponents
+
+private struct PresetChip: View {
+    let type: SessionType
+    let duration: TimeInterval
+    let isSelected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: DS.Spacing.xs) {
+                Image(systemName: type.symbol)
+                    .symbolRenderingMode(.hierarchical)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(type.title).font(.callout.weight(.semibold))
+                    Text(TimeFormatter.minutesLabel(duration))
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .padding(.horizontal, DS.Spacing.md)
+            .padding(.vertical, DS.Spacing.sm + 2)
+            .background(
+                RoundedRectangle(cornerRadius: DS.Radius.md, style: .continuous)
+                    .fill(isSelected ? AppTheme.accent.opacity(0.20) : Color.primary.opacity(0.05))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: DS.Radius.md, style: .continuous)
+                    .strokeBorder(isSelected ? AppTheme.accent : Color.primary.opacity(0.08), lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
+        .animation(DS.Motion.calm, value: isSelected)
+    }
+}
+
+private struct PrimaryTransportButton: View {
+    let isRunning: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            ZStack {
+                Circle()
+                    .fill(AppTheme.sessionGradient)
+                    .frame(width: 84, height: 84)
+                    .shadow(color: AppTheme.electricIndigo.opacity(0.45), radius: 14, y: 4)
+                Image(systemName: isRunning ? "pause.fill" : "play.fill")
+                    .font(.system(size: 26, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .contentTransition(.symbolEffect(.replace))
+            }
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(isRunning ? "Pause" : "Start")
+    }
+}
+
+private struct SecondaryCircleButton: View {
+    let symbol: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            ZStack {
+                Circle()
+                    .fill(DS.Surface.chip)
+                    .frame(width: 56, height: 56)
+                Circle()
+                    .strokeBorder(Color.primary.opacity(0.10), lineWidth: 1)
+                    .frame(width: 56, height: 56)
+                Image(systemName: symbol)
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(.primary.opacity(0.9))
+            }
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+private struct StatCard: View {
+    let title: String
+    let value: String
+    let subtitle: String
+    let symbol: String
+    let tint: Color
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: DS.Spacing.xs) {
+            HStack(spacing: DS.Spacing.xs) {
+                Image(systemName: symbol).foregroundStyle(tint)
+                Text(title.uppercased())
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .tracking(0.5)
+            }
+            Text(value)
+                .font(.display(28, weight: .bold))
+                .monospacedDigit()
+            Text(subtitle)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(DS.Spacing.lg)
+        .glassCard()
     }
 }
 
@@ -218,22 +252,18 @@ private struct CustomDurationSheet: View {
     @State private var minutes: Double = 30
 
     var body: some View {
-        VStack(spacing: 20) {
-            Text("Custom session")
-                .font(.title2.weight(.semibold))
+        VStack(spacing: DS.Spacing.lg) {
+            Text("Custom session").font(.title2.weight(.semibold))
             Text("Set the focus duration in minutes.")
                 .foregroundStyle(.secondary)
-            HStack {
+            HStack(alignment: .lastTextBaseline, spacing: DS.Spacing.xs) {
                 Text("\(Int(minutes))")
-                    .font(.system(size: 60, weight: .semibold, design: .rounded))
+                    .font(.display(56, weight: .semibold))
                     .monospacedDigit()
-                Text("min")
-                    .foregroundStyle(.secondary)
-                    .padding(.bottom, 8)
+                Text("min").foregroundStyle(.secondary)
             }
-            Slider(value: $minutes, in: 5...180, step: 5)
-                .frame(width: 340)
-            HStack(spacing: 12) {
+            Slider(value: $minutes, in: 5...180, step: 5).frame(width: 340)
+            HStack(spacing: DS.Spacing.sm) {
                 Button("Cancel") { dismiss() }
                     .keyboardShortcut(.cancelAction)
                 Spacer()
@@ -247,10 +277,10 @@ private struct CustomDurationSheet: View {
                 .buttonStyle(.borderedProminent)
                 .tint(AppTheme.accent)
             }
-            .padding(.top, 12)
+            .padding(.top, DS.Spacing.sm)
         }
-        .padding(30)
-        .frame(width: 420)
+        .padding(DS.Spacing.xl)
+        .frame(width: 440)
         .onAppear { minutes = Double(model.customDurationMinutes) }
     }
 }

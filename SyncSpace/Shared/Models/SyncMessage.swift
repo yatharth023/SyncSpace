@@ -2,27 +2,48 @@
 //  SyncMessage.swift
 //  SyncSpace
 //
-//  Discriminated union sent over MultipeerConnectivity. Designed to stay
-//  small and incremental; never send the full app state on every change.
-//
 
 import Foundation
 
 public enum SyncMessage: Codable, Sendable {
 
-    // Mac -> iPhone broadcasts.
+    // Mac → iPhone broadcasts.
     case timerUpdate(TimerState)
     case timerCompleted(SessionType)
     case audioUpdate(AudioMixState)
     case taskSnapshot([TaskItem])
+    case analyticsSnapshot(AnalyticsSnapshot)
     case sessionRecorded(plannedSeconds: Int, actualSeconds: Int, sessionTypeID: String)
 
-    // iPhone -> Mac commands.
+    // iPhone → Mac commands.
     case command(RemoteCommand)
     case requestSnapshot
 
     // Bidirectional.
     case handshake(role: PeerRole, deviceName: String, appVersion: String)
+    case heartbeat
+}
+
+public struct AnalyticsSnapshot: Codable, Hashable, Sendable {
+    public var today: TimeInterval
+    public var week: TimeInterval
+    public var month: TimeInterval
+    public var sessionsToday: Int
+    public var streak: Int
+
+    public init(today: TimeInterval = 0,
+                week: TimeInterval = 0,
+                month: TimeInterval = 0,
+                sessionsToday: Int = 0,
+                streak: Int = 0) {
+        self.today = today
+        self.week = week
+        self.month = month
+        self.sessionsToday = sessionsToday
+        self.streak = streak
+    }
+
+    public static let empty = AnalyticsSnapshot()
 }
 
 public enum RemoteCommand: Codable, Sendable {

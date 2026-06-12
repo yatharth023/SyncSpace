@@ -2,9 +2,6 @@
 //  TasksScreen.swift
 //  SyncSpace
 //
-//  Mac tasks list with drag-and-drop reordering, swipe to complete, and
-//  an inline composer along the top.
-//
 
 #if os(macOS)
 import SwiftUI
@@ -16,107 +13,117 @@ struct TasksScreen: View {
     @FocusState private var composerFocused: Bool
 
     var body: some View {
-        VStack(spacing: 0) {
-            header
+        ScrollView {
+            VStack(spacing: DS.Spacing.lg) {
+                ScreenHeader(
+                    title: "Tasks",
+                    subtitle: "Plan and check off the work you'll do during your next session.",
+                    trailing: AnyView(
+                        Text("\(openCount) open · \(doneCount) done")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    )
+                )
 
-            ScrollView {
-                LazyVStack(spacing: 10) {
+                composer
+                filterBar
+
+                LazyVStack(spacing: DS.Spacing.sm) {
                     ForEach(filteredTasks) { task in
-                        TaskRow(task: task,
-                                onToggle: { model.toggleTask(task.id) },
-                                onDelete: { model.deleteTask(id: task.id) },
-                                onRename: { newTitle in
-                                    var copy = task
-                                    copy.title = newTitle
-                                    model.updateTask(copy)
-                                })
+                        TaskRow(
+                            task: task,
+                            onToggle: { model.toggleTask(task.id) },
+                            onDelete: { model.deleteTask(id: task.id) },
+                            onRename: { newTitle in
+                                var copy = task
+                                copy.title = newTitle
+                                model.updateTask(copy)
+                            }
+                        )
                     }
-                    if filteredTasks.isEmpty {
-                        emptyState
-                    }
+                    if filteredTasks.isEmpty { emptyState }
                 }
-                .padding(.horizontal, 36)
-                .padding(.vertical, 18)
             }
+            .padding(.horizontal, DS.Spacing.xl)
+            .padding(.top, DS.Spacing.lg)
+            .padding(.bottom, DS.Spacing.xxl)
+            .frame(maxWidth: 880)
+            .frame(maxWidth: .infinity)
         }
     }
+
+    private var openCount: Int { model.tasks.filter { !$0.isCompleted }.count }
+    private var doneCount: Int { model.tasks.filter { $0.isCompleted }.count }
 
     private var filteredTasks: [TaskItem] {
         switch filter {
         case .all:       return model.tasks.sorted { $0.sortIndex < $1.sortIndex }
         case .open:      return model.tasks.filter { !$0.isCompleted }.sorted { $0.sortIndex < $1.sortIndex }
-        case .completed: return model.tasks.filter { $0.isCompleted }.sorted { ($0.completedAt ?? .distantPast) > ($1.completedAt ?? .distantPast) }
+        case .completed: return model.tasks.filter { $0.isCompleted }.sorted {
+            ($0.completedAt ?? .distantPast) > ($1.completedAt ?? .distantPast)
+        }
         }
     }
 
-    private var header: some View {
-        VStack(spacing: 16) {
-            HStack(spacing: 12) {
-                Image(systemName: "plus.circle.fill")
-                    .font(.system(size: 22))
-                    .foregroundStyle(AppTheme.accent)
-                TextField("Add a focus task…", text: $newTitle)
-                    .textFieldStyle(.plain)
-                    .font(.title3)
-                    .focused($composerFocused)
-                    .onSubmit(addTask)
+    private var composer: some View {
+        HStack(spacing: DS.Spacing.sm) {
+            Image(systemName: "plus.circle.fill")
+                .font(.title2)
+                .foregroundStyle(AppTheme.accent)
+            TextField("Add a focus task…", text: $newTitle)
+                .textFieldStyle(.plain)
+                .font(.title3)
+                .focused($composerFocused)
+                .onSubmit(addTask)
 
-                if !newTitle.isEmpty {
-                    Button("Add", action: addTask)
-                        .buttonStyle(.borderedProminent)
-                        .tint(AppTheme.accent)
-                        .keyboardShortcut(.return, modifiers: [])
-                }
-            }
-            .padding(.horizontal, 18)
-            .padding(.vertical, 14)
-            .glassCard()
-
-            HStack(spacing: 8) {
-                ForEach(TaskFilter.allCases) { option in
-                    Button {
-                        withAnimation(.smooth(duration: 0.25)) {
-                            filter = option
-                        }
-                    } label: {
-                        Text(option.title)
-                            .font(.caption.weight(.semibold))
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 6)
-                            .background(
-                                Capsule().fill(filter == option ? AppTheme.accent.opacity(0.3) : Color.white.opacity(0.05))
-                            )
-                            .overlay(
-                                Capsule().stroke(filter == option ? AppTheme.accent : .white.opacity(0.12), lineWidth: 1)
-                            )
-                            .foregroundStyle(.white)
-                    }
-                    .buttonStyle(.plain)
-                }
-                Spacer()
-                Text("\(model.tasks.filter { !$0.isCompleted }.count) open · \(model.tasks.filter { $0.isCompleted }.count) done")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+            if !newTitle.isEmpty {
+                Button("Add", action: addTask)
+                    .buttonStyle(.borderedProminent)
+                    .tint(AppTheme.accent)
             }
         }
-        .padding(.horizontal, 36)
-        .padding(.top, 24)
+        .padding(.horizontal, DS.Spacing.lg)
+        .padding(.vertical, DS.Spacing.md)
+        .glassCard()
+    }
+
+    private var filterBar: some View {
+        HStack(spacing: DS.Spacing.xs) {
+            ForEach(TaskFilter.allCases) { option in
+                Button {
+                    withAnimation(DS.Motion.calm) { filter = option }
+                } label: {
+                    Text(option.title)
+                        .font(.caption.weight(.semibold))
+                        .padding(.horizontal, DS.Spacing.md)
+                        .padding(.vertical, DS.Spacing.xs + 1)
+                        .background(
+                            Capsule().fill(filter == option ? AppTheme.accent.opacity(0.22) : Color.primary.opacity(0.05))
+                        )
+                        .overlay(
+                            Capsule().strokeBorder(filter == option ? AppTheme.accent : Color.primary.opacity(0.08), lineWidth: 1)
+                        )
+                        .foregroundStyle(.primary)
+                }
+                .buttonStyle(.plain)
+            }
+            Spacer()
+        }
     }
 
     private var emptyState: some View {
-        VStack(spacing: 10) {
+        VStack(spacing: DS.Spacing.sm) {
             Image(systemName: "sparkles")
-                .font(.system(size: 36))
+                .font(.system(size: 32))
                 .foregroundStyle(AppTheme.accent)
-            Text("Nothing here yet")
-                .font(.headline)
+            Text("Nothing here yet").font(.headline)
             Text("Add a task above to get started. They'll appear instantly on your iPhone.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
         }
         .frame(maxWidth: 360)
-        .padding(40)
+        .padding(DS.Spacing.xl)
         .frame(maxWidth: .infinity)
         .glassCard()
     }
@@ -152,11 +159,11 @@ private struct TaskRow: View {
     @FocusState private var renameFocused: Bool
 
     var body: some View {
-        HStack(spacing: 14) {
+        HStack(spacing: DS.Spacing.sm) {
             Button(action: onToggle) {
                 ZStack {
                     Circle()
-                        .stroke(task.isCompleted ? AppTheme.mint : Color.white.opacity(0.25), lineWidth: 1.5)
+                        .strokeBorder(task.isCompleted ? AppTheme.mint : Color.primary.opacity(0.30), lineWidth: 1.6)
                         .frame(width: 22, height: 22)
                     if task.isCompleted {
                         Image(systemName: "checkmark")
@@ -193,16 +200,15 @@ private struct TaskRow: View {
                     Image(systemName: "square.and.pencil")
                 }
                 .buttonStyle(.borderless)
-
                 Button(role: .destructive, action: onDelete) {
                     Image(systemName: "trash")
                 }
                 .buttonStyle(.borderless)
             }
         }
-        .padding(.horizontal, 18)
-        .padding(.vertical, 14)
-        .glassCard(cornerRadius: 14)
+        .padding(.horizontal, DS.Spacing.lg)
+        .padding(.vertical, DS.Spacing.md - 2)
+        .glassCard(cornerRadius: DS.Radius.md)
         .onHover { hovering = $0 }
     }
 
@@ -214,9 +220,7 @@ private struct TaskRow: View {
 
     private func commitRename() {
         let trimmed = draftTitle.trimmingCharacters(in: .whitespaces)
-        if !trimmed.isEmpty, trimmed != task.title {
-            onRename(trimmed)
-        }
+        if !trimmed.isEmpty, trimmed != task.title { onRename(trimmed) }
         editing = false
     }
 }

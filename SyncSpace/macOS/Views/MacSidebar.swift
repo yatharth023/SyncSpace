@@ -2,6 +2,11 @@
 //  MacSidebar.swift
 //  SyncSpace
 //
+//  Native macOS sidebar. Uses `List(selection:)` with `.listStyle(.sidebar)`
+//  so the appearance matches Apple Music, Xcode, Things 3, Craft.
+//  The previous version layered a custom RoundedRectangle as a selection
+//  indicator — visually bulky and out of place on macOS.
+//
 
 #if os(macOS)
 import SwiftUI
@@ -9,141 +14,92 @@ import SwiftUI
 struct MacSidebar: View {
     @Binding var selection: MacDestination
     let model: AppModel
-    @Namespace private var selectionNS
 
     var body: some View {
         VStack(spacing: 0) {
             sidebarHeader
 
-            VStack(spacing: 4) {
-                ForEach(MacDestination.allCases) { dest in
-                    SidebarRow(
-                        destination: dest,
-                        isSelected: selection == dest,
-                        namespace: selectionNS
-                    ) {
-                        withAnimation(.smooth(duration: 0.32)) {
-                            selection = dest
-                        }
+            List(selection: $selection) {
+                Section {
+                    ForEach(MacDestination.allCases) { dest in
+                        Label(dest.title, systemImage: dest.symbol)
+                            .tag(dest)
+                            .accessibilityLabel(dest.title)
                     }
                 }
             }
-            .padding(.horizontal, 10)
-            .padding(.top, 8)
-
-            Spacer()
+            .listStyle(.sidebar)
+            .scrollContentBackground(.hidden)
 
             statusFooter
         }
-        .background(.thinMaterial)
     }
+
+    // MARK: Header
 
     private var sidebarHeader: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 10) {
-                ZStack {
-                    Circle()
-                        .fill(AppTheme.sessionGradient)
-                        .frame(width: 34, height: 34)
-                        .shadow(color: AppTheme.electricIndigo.opacity(0.5), radius: 10)
-                    Image(systemName: "circle.hexagongrid.fill")
-                        .foregroundStyle(.white)
-                        .font(.system(size: 16, weight: .semibold))
-                }
-                VStack(alignment: .leading, spacing: 0) {
-                    Text("SyncSpace")
-                        .font(.headline)
-                    Text("Focus Hub")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
+        HStack(spacing: DS.Spacing.sm) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    .fill(AppTheme.sessionGradient)
+                    .frame(width: 30, height: 30)
+                    .shadow(color: AppTheme.electricIndigo.opacity(0.4), radius: 6, y: 2)
+                Image(systemName: "circle.hexagongrid.fill")
+                    .foregroundStyle(.white)
+                    .font(.system(size: 13, weight: .semibold))
             }
-            .padding(.horizontal, 16)
-            .padding(.top, 18)
-            .padding(.bottom, 10)
+            VStack(alignment: .leading, spacing: 0) {
+                Text("SyncSpace")
+                    .font(.system(size: 13, weight: .semibold))
+                Text("Focus Hub")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
         }
+        .padding(.horizontal, DS.Spacing.md)
+        .padding(.top, DS.Spacing.md)
+        .padding(.bottom, DS.Spacing.sm)
     }
 
+    // MARK: Footer
+
     private var statusFooter: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Divider().opacity(0.2)
-            HStack(alignment: .center, spacing: 10) {
-                Image(systemName: "iphone.radiowaves.left.and.right")
+        VStack(alignment: .leading, spacing: 0) {
+            Divider()
+            HStack(spacing: DS.Spacing.sm) {
+                Image(systemName: model.peerManager.status == .connected
+                      ? "iphone.gen3.radiowaves.left.and.right"
+                      : "iphone.gen3.slash")
+                    .font(.system(size: 14))
+                    .symbolRenderingMode(.hierarchical)
                     .foregroundStyle(model.peerManager.status == .connected ? AppTheme.mint : .secondary)
+
                 VStack(alignment: .leading, spacing: 1) {
                     Text(model.peerManager.status.title)
-                        .font(.caption.weight(.semibold))
+                        .font(.system(size: 11, weight: .semibold))
                     Text(footerSubtitle)
-                        .font(.caption2)
+                        .font(.system(size: 10))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
+                        .truncationMode(.middle)
                 }
-                Spacer()
+                Spacer(minLength: 0)
             }
-            .padding(.horizontal, 14)
-            .padding(.bottom, 14)
+            .padding(.horizontal, DS.Spacing.md)
+            .padding(.vertical, DS.Spacing.sm)
         }
     }
 
     private var footerSubtitle: String {
         switch model.peerManager.status {
-        case .connected:
-            return model.peerManager.connectedPeerNames.first ?? "iPhone linked"
-        case .advertising:
-            return "Open SyncSpace on iPhone"
-        case .browsing:
-            return "Searching nearby…"
-        case .connecting:
-            return "Pairing securely"
-        case .offline:
-            return "Tap to discover"
+        case .connected:     return model.peerManager.connectedPeerNames.first ?? "iPhone linked"
+        case .advertising:   return "Open SyncSpace on iPhone"
+        case .browsing:      return "Searching nearby"
+        case .connecting:    return "Pairing securely"
+        case .reconnecting:  return "Reconnecting…"
+        case .offline:       return "Networking paused"
         }
-    }
-}
-
-private struct SidebarRow: View {
-    let destination: MacDestination
-    let isSelected: Bool
-    let namespace: Namespace.ID
-    let action: () -> Void
-    @State private var hovering: Bool = false
-
-    var body: some View {
-        Button(action: action) {
-            ZStack(alignment: .leading) {
-                if isSelected {
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .fill(AppTheme.accent.opacity(0.18))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                .stroke(AppTheme.accent.opacity(0.45), lineWidth: 1)
-                        )
-                        .matchedGeometryEffect(id: "sidebar-selection", in: namespace)
-                }
-                HStack(spacing: 10) {
-                    Image(systemName: destination.symbol)
-                        .symbolRenderingMode(.hierarchical)
-                        .foregroundStyle(isSelected ? AppTheme.accent : .primary.opacity(0.85))
-                        .font(.system(size: 14, weight: .semibold))
-                        .frame(width: 22)
-                    Text(destination.title)
-                        .font(.system(size: 13, weight: isSelected ? .semibold : .regular))
-                        .foregroundStyle(.primary)
-                    Spacer()
-                }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 9)
-            }
-            .contentShape(Rectangle())
-            .background(
-                hovering && !isSelected
-                ? RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(Color.white.opacity(0.05))
-                : nil
-            )
-        }
-        .buttonStyle(.plain)
-        .onHover { hovering = $0 }
     }
 }
 #endif
