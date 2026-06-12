@@ -33,9 +33,12 @@
 17. [Networking design](#networking-design)
 18. [Audio engine](#audio-engine)
 19. [Haptic system](#haptic-system)
-20. [Demo walkthrough](#demo-walkthrough)
-21. [Known challenges](#known-challenges)
-22. [Roadmap](#roadmap)
+20. [Theme system](#theme-system)
+21. [Page header system](#page-header-system)
+22. [Demo walkthrough](#demo-walkthrough)
+23. [Recent hardening pass](#recent-hardening-pass)
+24. [Known challenges](#known-challenges)
+25. [Roadmap](#roadmap)
 23. [Future enhancements](#future-enhancements)
 24. [Resume highlights](#resume-highlights)
 25. [Interview talking points](#interview-talking-points)
@@ -155,8 +158,11 @@ The project is a **single multi-platform target** with `#if os(macOS)` and
 - **Analytics** with Swift Charts: daily/weekly/monthly focus time, session
   mix donut, completion rate, streak tracking, recent sessions list.
 - **Settings** for appearance, audio engine toggle, custom durations, history
-  reset, connection diagnostics.
+  reset, connection diagnostics. Theme switching (System / Light / Dark) is
+  reactive end-to-end — see [Theme system](#theme-system).
 - **Sidebar Navigation** with animated `matchedGeometryEffect` selection.
+- **Centered page-title capsule** (`PageHeaderCapsule`) shared across every
+  destination — see [Page header system](#page-header-system).
 - Global keyboard shortcuts (⌘P start/pause, ⌘R reset, ⌘. skip).
 
 ### iOS — SyncSpace Remote
@@ -173,6 +179,10 @@ The project is a **single multi-platform target** with `#if os(macOS)` and
   distinctive double-bloom completion alert.
 - **Auto-pairing** — once the Hub is advertising, the Remote silently invites
   it on launch.
+- **Polished task entry** — `@FocusState` driven composer with
+  `.scrollDismissesKeyboard(.interactively)`, tap-outside dismissal, and a
+  keyboard-toolbar Done button so the keyboard never traps the user (matches
+  Reminders / Notes / Mail).
 
 ---
 
@@ -211,12 +221,15 @@ SyncSpace/
     │   │   ├── CircularTimerView.swift
     │   │   ├── ConnectionBadge.swift
     │   │   ├── LevelMeter.swift
+    │   │   ├── PageHeaderCapsule.swift       # Centered page-title pill
     │   │   └── PulsingOrb.swift
     │   │
     │   └── Utilities/
+    │       ├── DesignSystem.swift            # Spacing / radius / motion tokens
     │       ├── Theme.swift                   # Brand palette + gradients
+    │       ├── ThemePreference.swift         # AppearanceMode + ThemeBridge
     │       ├── TimeFormatter.swift
-    │       └── ViewModifiers.swift           # GlassCardStyle, breathing
+    │       └── ViewModifiers.swift           # GlassCardStyle, ScreenHeader, InfoChip
     │
     ├── macOS/
     │   └── Views/
@@ -332,7 +345,24 @@ phone connected. Standalone mode works fully.
 - **Remote (iPhone)** — runs `MCNearbyServiceBrowser`. Auto-invites the first
   host it sees so users never need to tap a "pair" button.
 
-Both ends use `MCEncryptionPreference.required` for transport security.
+Both ends use `MCEncryptionPreference.none`. SyncSpace ships **no sensitive
+payloads** — only timer state, audio mix, task snapshots, and remote commands
+travel over the wire. `.optional` and `.required` both require both ends to
+negotiate a session key; on freshly paired devices that negotiation stalls
+intermittently and produced the "stuck on Connecting…" failure mode that the
+project hit during testing. `.none` removes the failure mode while staying
+appropriate for a local-network productivity app.
+
+### Peer de-duplication
+
+`MCNearbyServiceBrowser` publishes the same physical device under separate
+`MCPeerID` instances when it sees it across more than one transport
+(Wi-Fi + AWDL/Bluetooth). Identity-based de-duplication therefore misses
+the duplicates and the same Mac appears twice in the iPhone's
+*Discoverables* list. `PeerManager` de-duplicates by `displayName`; when
+the same display name surfaces under a new `MCPeerID`, the stored entry is
+**replaced** with the new one — the newer ID is the one MC will actually
+route invitations through.
 
 ---
 
@@ -539,14 +569,50 @@ SyncSpace is **100% offline by design.**
 
 `PeerManager` is the only file that touches `MultipeerConnectivity`. It exposes:
 
-- `start()` / `stop()` lifecycle methods
-- `send(_:)` reliable and `sendUnreliable(_:)` for hot paths
-- `onReceiveMessage` callback invoked on `MainActor`
-- Observable status (`offline | advertising | browsing | connecting | connected`)
+- `start()` / `stop()` / `restart()` lifecycle methods. `restart()` exists so
+  the in-Settings "Restart" button can do a single atomic teardown-and-rebuild
+  rather than the stop-then-asyncAfter-start pattern earlier callers used
+  (which left a window of stale MC state).
+- `send(_:)` reliable and `sendUnreliable(_:)` for hot paths.
+- `onReceiveMessage` callback invoked on `MainActor`.
+- Observable status: `offline | advertising | browsing | connecting | reconnecting | connected`.
 
 The MC delegate methods are `nonisolated` and hop back into MainActor for any
 state mutation. The `MCSession` reference is held as a `nonisolated let` so it
 is safe to read from the MC framework's internal queues.
+
+### Connection state machine
+
+Authoritative transitions:
+
+```
+offline ─▶ advertising / browsing ─▶ connecting ─▶ connected
+                  ▲                       │            │
+                  │                       ▼            ▼
+                  └──── revertToIdle() ◀──┴── reconnecting (auto-rescheduled)
+```
+
+- `inFlightInviteTarget` + `connectingStartedAt` are tracked so we never
+  pile two invites on top of each other and so we can recognise a stuck
+  `.connecting` state.
+- A **connecting ceiling** (12s) in the watchdog reverts a stuck
+  `.connecting` back to idle. MC occasionally swallows `notConnected` after
+  a silent handshake failure; without this ceiling the UI sat on
+  "Connecting…" indefinitely.
+- `lostPeer` clears the in-flight invite target if the lost peer is exactly
+  the one we were trying to reach, so the watchdog can immediately re-target
+  without waiting for the dead invite to time out.
+
+### Timing constants
+
+| Constant            | Value | Why                                                         |
+|---------------------|------:|-------------------------------------------------------------|
+| `heartbeatInterval` |  3.0s | Detects half-open sessions cheaply                           |
+| `watchdogInterval`  |  3.0s | Re-invite cadence — short so a failed first invite re-fires |
+| `inviteThrottle`    |  4.0s | A hair under `inviteTimeout` so we don't queue duplicates    |
+| `inviteTimeout`     | 10.0s | Reasonable ceiling for the local network                     |
+| `reconnectDelay`    |  0.8s | Snappy recovery after a dropped link                         |
+| `connectingCeiling` | 12.0s | Hard limit on `.connecting` before revert                    |
 
 ---
 
@@ -585,6 +651,128 @@ trackpad-equipped users still get tactile cues.
 
 ---
 
+## Theme system
+
+Appearance is driven through **one channel only**: SwiftUI's
+`.preferredColorScheme(...)`. The user's choice (`System`, `Light`, `Dark`)
+is stored in `@AppStorage("syncspace.appearance")` and resolved by
+`AppearanceModifier` at the Scene root.
+
+### The single-channel rule
+
+Earlier iterations drove appearance through two parallel channels —
+`.preferredColorScheme(...)` *and* `NSApp.appearance` /
+`UIWindow.overrideUserInterfaceStyle`. On macOS Tahoe this races:
+`.preferredColorScheme(nil)` does not reliably invalidate a previously
+stamped `.light` override, but `NSApp.appearance = nil` correctly clears.
+The two paths diverged — window chrome followed the system while SwiftUI
+views reading `@Environment(\.colorScheme)` stayed pinned. That is the
+"window dark, cards light, materials mixed" symptom.
+
+The current implementation removes the AppKit/UIKit bridge entirely and
+pipes everything through `preferredColorScheme` with an **always-explicit**
+value on macOS — never `nil` — so SwiftUI's invalidation path always sees
+an explicit-to-explicit transition.
+
+### `ThemeBridge`
+
+`ThemeBridge` is a `@MainActor @Observable` singleton that KVO-observes
+`NSApp.effectiveAppearance` on macOS and republishes a `ColorScheme`. When
+the user picks System mode, `AppearanceModifier` reads
+`ThemeBridge.shared.systemColorScheme` and passes it as the explicit
+`preferredColorScheme` value. Live OS light/dark toggles propagate
+automatically — the KVO callback re-fires, the bridge republishes, the
+`@Observable` registrar invalidates `AppearanceModifier`, and the whole
+view tree re-evaluates in lockstep.
+
+### Propagation flow
+
+```
+AppStorage("syncspace.appearance")
+        │
+        ▼
+AppearanceModifier.body
+        │
+        ├── .light   → resolved = .light
+        ├── .dark    → resolved = .dark
+        └── .system  → resolved = ThemeBridge.shared.systemColorScheme  (macOS)
+                       resolved = nil                                    (iOS)
+        │
+        ▼
+.preferredColorScheme(resolved)            (single channel)
+        │
+        ▼
+@Environment(\.colorScheme) on every descendant
+        │
+        ▼
+GlassCardStyle · PageHeaderCapsule · ConnectionBadge · chips
+window chrome · materials  → all re-render together.
+```
+
+### Persistence
+
+- `@AppStorage` survives relaunches.
+- System mode survives relaunches and always re-reads the live OS
+  appearance on launch via `ThemeBridge`.
+- No view caches an appearance value. Custom colors that adapt
+  (e.g. `GlassCardStyle`'s border opacity) read `@Environment(\.colorScheme)`
+  directly so they re-evaluate when the env flips.
+
+---
+
+## Page header system
+
+Every macOS destination (Focus Session, Tasks, Audio Mixer, Analytics,
+Settings) gets the same centered title pill rendered by a single
+`PageHeaderCapsule` view in `Shared/Components`. The component owns
+typography, padding, material, corner radius, and minimum width, so no
+screen can drift out of lock-step.
+
+```swift
+PageHeaderCapsule("Focus Session")
+```
+
+Internal sizing:
+
+- Font: `.system(size: 14, weight: .semibold)` with `0.2` tracking.
+- Horizontal padding: 32 pt per side.
+- Vertical padding: 12 pt top, 11 pt bottom (asymmetric for optical
+  centering — pulls the cap-height onto the geometric centre of the
+  capsule).
+- Minimum width: 168 pt so short titles ("Tasks", "Settings") still feel
+  spacious.
+- Background: `DS.Surface.chip` (`.ultraThinMaterial`) inside a
+  `Capsule(style: .continuous)`.
+- Border: 1 pt hairline at `Color.primary.opacity(scheme == .dark ? 0.10 : 0.08)`.
+- Accessibility: `.accessibilityAddTraits(.isHeader)`.
+
+### Why the capsule lives in content, not the toolbar
+
+On macOS 26 (Tahoe) the unified toolbar auto-wraps `ToolbarItem(placement:
+.principal)` content in its own Liquid Glass capsule. Adding a custom
+capsule there produced a nested pill — visible outer border, inner border,
+and two stacked materials. `MacRootView` therefore hosts
+`PageHeaderCapsule` at the top of the detail content area instead, and the
+window toolbar style is set to `.unified(showsTitle: false)` so the system
+no longer renders a competing title chip:
+
+```swift
+detail: {
+    VStack(spacing: 0) {
+        PageHeaderCapsule(selection.navigationTitle)
+            .padding(.top, DS.Spacing.md)
+            .padding(.bottom, DS.Spacing.xs)
+        detailContent
+    }
+    .background(BreathingBackground(intensity: 0.35))
+}
+```
+
+The result is one capsule per destination, fully under our control, with
+no system chrome nesting around it.
+
+---
+
 ## Demo walkthrough
 
 A typical product demo:
@@ -606,16 +794,76 @@ A typical product demo:
 
 ---
 
+## Recent hardening pass
+
+A focused stabilisation pass landed before this README update. Highlights:
+
+### UI
+
+- **`PageHeaderCapsule`** added as the single shared page-title pill.
+  Renders in content space — never in `.principal` — to avoid the
+  double-capsule rendering caused by macOS 26 Tahoe wrapping toolbar items
+  in its own Liquid Glass capsule. `windowToolbarStyle` switched to
+  `.unified(showsTitle: false)` so the system no longer renders a competing
+  title chip.
+- **iOS keyboard never traps the user.** The Tasks composer used to
+  re-focus the field after every submit, which kept the keyboard up
+  forever. It now resigns on submit and is dismissable via
+  `.scrollDismissesKeyboard(.interactively)`, a `simultaneousGesture`
+  tap-outside, and a `ToolbarItemGroup(placement: .keyboard)` Done button.
+
+### Theme
+
+- **Theme is single-channel.** The `NSApp.appearance` /
+  `UIWindow.overrideUserInterfaceStyle` bridge that raced
+  `preferredColorScheme` is gone. `AppearanceModifier` now drives
+  appearance through `.preferredColorScheme(...)` only, with an
+  always-explicit value on macOS resolved by `ThemeBridge`.
+- **`Light → System` works.** Previously this transition left the window
+  chrome dark and the SwiftUI-managed cards/materials light. Fixed by the
+  single-channel rewrite plus KVO observation of `NSApp.effectiveAppearance`.
+  Live OS appearance toggles while the app is running also propagate
+  correctly now.
+
+### Networking
+
+- **Duplicate Macs in the iPhone's *Discoverables*** fixed. Peers are now
+  de-duplicated by `displayName`, and a fresh `MCPeerID` for an
+  already-known name replaces the stored one (the newer ID is what MC
+  routes invitations through across multiple transports).
+- **Faster handshake.** `inviteTimeout` 15s → 10s, `watchdogInterval` 6s
+  → 3s, `inviteThrottle` 8s → 4s, `reconnectDelay` 1.5s → 0.8s. Perceived
+  connect time drops from ~5–15 s on a flaky first invite to ~1–3 s.
+- **No more stuck `.connecting`.** A 12 s connecting-ceiling in the
+  watchdog reverts the status to idle if MC swallows `notConnected` after
+  a silent handshake failure. The watchdog then re-invites cleanly.
+- **`MCEncryptionPreference` is `.none`** for a local-network productivity
+  app — `.optional`/`.required` were stalling on the encryption
+  negotiation on freshly paired devices.
+- **`PeerManager.restart()`** added. The earlier
+  `stop() → asyncAfter(0.25) → start()` pattern in Settings buttons left a
+  brief window of stale MC state; the new method is atomic.
+
+### Build status
+
+Both targets build clean against macOS 26 / iOS 26 (verified with
+`xcodebuild … -destination 'platform=macOS'` and
+`… 'generic/platform=iOS Simulator'`).
+
+---
+
 ## Known challenges
 
-- **MC requires the same major OS** for best reliability. Cross-major-OS
-  pairing sometimes drops on the first attempt — the Remote auto-retries.
 - **Procedural audio** is convincing on rain/noise/cafe but lofi is more of a
   cousin to a real track than a faithful loop. Easy upgrade path: replace
   the `SignalGenerator` cases with file-based `AVAudioPlayerNode` schedules.
 - **App Sandbox + MultipeerConnectivity**: the macOS target ships with
   `ENABLE_INCOMING_NETWORK_CONNECTIONS` and `ENABLE_OUTGOING_NETWORK_CONNECTIONS`
   on, which is required for Bonjour discovery.
+- **macOS Tahoe Liquid Glass nesting** — any custom pill placed inside
+  `ToolbarItem(placement: .principal)` will render *inside* the system's
+  own glass capsule. Future toolbar work should host visual chrome in
+  content space, as the `PageHeaderCapsule` does today.
 
 ---
 
@@ -693,6 +941,16 @@ A typical product demo:
 - The audio engine starts lazily on the Mac when the app launches and stops if
   you toggle it off in Settings.
 - To clear all stored history, use Settings → Data → *Clear history*.
+- **Theme propagation rule.** Drive appearance exclusively through
+  `.preferredColorScheme(...)` at the Scene root via
+  `appearancePreference()`. Do not call `NSApp.appearance =` or
+  `UIWindow.overrideUserInterfaceStyle =` anywhere — those paths race the
+  SwiftUI override and produce the mixed light/dark rendering this project
+  has already debugged once.
+- **Page header rule.** Use `PageHeaderCapsule` for any centered page-title
+  pill, and place it in content space, not inside
+  `ToolbarItem(placement: .principal)`. macOS Tahoe wraps principal
+  toolbar items in its own glass capsule, which would re-nest the pill.
 
 ---
 
