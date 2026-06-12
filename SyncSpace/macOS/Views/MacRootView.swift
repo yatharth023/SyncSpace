@@ -56,21 +56,23 @@ public struct MacRootView: View {
             MacSidebar(selection: $selection, model: model)
                 .navigationSplitViewColumnWidth(min: 200, ideal: 220, max: 260)
         } detail: {
-            detailContent
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(BreathingBackground(intensity: 0.35))
-                .overlay(alignment: .bottomTrailing) {
-                    SyncDebugOverlay(model: model)
-                }
-                .toolbar {
-                    // Clean centred page title — no capsule, no accent
-                    // ornament. Connection state lives in the sidebar
-                    // footer where it doesn't compete for attention.
-                    ToolbarItem(placement: .principal) {
-                        Text(selection.navigationTitle)
-                            .font(.system(size: 13, weight: .semibold))
-                    }
-                }
+            // The PageHeaderCapsule lives in the content area, not the
+            // toolbar. macOS 26 (Tahoe) wraps `.principal` toolbar items in
+            // its own Liquid Glass capsule, so any custom capsule placed
+            // there renders nested — two stacked pill backgrounds and two
+            // stacked borders. Hosting the capsule inside the detail view
+            // gives us a single, well-padded, content-owned pill.
+            VStack(spacing: 0) {
+                PageHeaderCapsule(selection.navigationTitle)
+                    .padding(.top, DS.Spacing.md)
+                    .padding(.bottom, DS.Spacing.xs)
+                detailContent
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(BreathingBackground(intensity: 0.35))
+            .overlay(alignment: .bottomTrailing) {
+                SyncDebugOverlay(model: model)
+            }
         }
         .navigationSplitViewStyle(.balanced)
         .sheet(

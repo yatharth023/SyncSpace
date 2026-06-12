@@ -48,7 +48,10 @@ struct SyncSpaceApp: App {
         }
         #if os(macOS)
         .defaultSize(width: 1180, height: 760)
-        .windowToolbarStyle(.unified(showsTitle: true))
+        // showsTitle:false — the page title now lives in the in-content
+        // PageHeaderCapsule. Letting the system also render it in the
+        // toolbar produced a competing title chip on macOS 26 (Tahoe).
+        .windowToolbarStyle(.unified(showsTitle: false))
         .commands {
             CommandGroup(replacing: .newItem) { }
             CommandMenu("Session") {

@@ -53,6 +53,24 @@ struct RemoteTasksScreen: View {
             .padding(.bottom, DS.Spacing.xxl)
         }
         .scrollIndicators(.hidden)
+        // Drag-down on the task list resigns the field — mirrors Reminders,
+        // Notes, Mail. Without this the keyboard stays up once the field
+        // takes focus and the user scrolls.
+        .scrollDismissesKeyboard(.interactively)
+        // Tap any non-interactive space on the screen to resign first
+        // responder. `simultaneousGesture` (not `onTapGesture`) so it does
+        // not eat taps on the rows or the composer button.
+        .simultaneousGesture(
+            TapGesture().onEnded { composerFocused = false }
+        )
+        // Always-present Done above the keyboard so the user can dismiss
+        // even when the list cannot be scrolled.
+        .toolbar {
+            ToolbarItemGroup(placement: .keyboard) {
+                Spacer()
+                Button("Done") { composerFocused = false }
+            }
+        }
     }
 
     private var composer: some View {
@@ -91,7 +109,11 @@ struct RemoteTasksScreen: View {
     private func commit() {
         model.addTask(title: newTitle)
         newTitle = ""
-        composerFocused = true
+        // Resign the field on submit. The previous version re-focused the
+        // composer here, which is exactly what trapped the keyboard on iOS:
+        // tapping Done / Return immediately handed focus back to the field
+        // and the keyboard never collapsed.
+        composerFocused = false
     }
 }
 

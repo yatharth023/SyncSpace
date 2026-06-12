@@ -4,24 +4,32 @@
 //
 //  Stable MultipeerConnectivity wrapper.
 //
-//  This revision focuses on the "iPhone stuck on Connecting…" failure mode.
-//  Three root causes are fixed:
+//  Earlier revisions fixed the "iPhone stuck on Connecting…" failure mode by
+//  resetting stale status, adding a watchdog, and dropping
+//  `MCEncryptionPreference` to `.none` for reliable handshakes on a
+//  local-network productivity app.
 //
-//   1. `updateIdleStatus()` previously treated `.connecting` as in-flight
-//      and refused to reset it. After a silently-failed MC handshake the
-//      status stayed pinned at `.connecting` forever, even after MC sent
-//      `.notConnected`. The new logic only refuses to overwrite `.connected`
-//      and `.reconnecting`.
+//  This revision tightens four lingering issues:
 //
-//   2. `MCNearbyServiceBrowser.foundPeer` fires once per peer; the entry
-//      lives in `discoveredPeers` after that, so a single failed invite was
-//      terminal. A periodic watchdog now re-invites every ~8s while we are
-//      not connected.
+//   1. Duplicate discoverables. MC publishes the same physical device under
+//      separate `MCPeerID` instances when it sees the device over more than
+//      one transport (Wi-Fi + AWDL/Bluetooth). De-duplication by MCPeerID
+//      identity therefore failed. We now de-duplicate by `displayName` and
+//      replace the stored peer with the most recently discovered one — that
+//      MCPeerID is the one MC will accept invitations on.
 //
-//   3. `MCEncryptionPreference.optional` requires both ends to negotiate.
-//      On freshly paired devices this stalls intermittently. `.none` is
-//      appropriate for a local-network productivity app and removes the
-//      failure mode.
+//   2. Slow connection establishment. Invitation timeout 15s, watchdog 6s,
+//      throttle 8s. With the host accepting immediately, a single failed
+//      probe stalled the perceived flow for ~14s. Tighter constants here.
+//
+//   3. Stale `.connecting`. If MC silently fails to send `.notConnected`
+//      after a dropped handshake, status pinned at `.connecting` until the
+//      next watchdog tick. A connecting-watchdog now reverts to idle after
+//      a hard ceiling so a fresh invite fires.
+//
+//   4. `lostPeer` left the entry in the discovered list. If a stale MCPeerID
+//      is referenced by an in-flight invite, the session never completes.
+//      `lostPeer` now updates state and clears the in-flight target.
 //
 //  An `os.Logger` is added so every transition is observable in Console.app
 //  for future debugging.
@@ -48,10 +56,19 @@ public final class PeerManager: NSObject {
 
     private static let serviceType = "syncspace"
     private static let heartbeatInterval: TimeInterval = 3.0
-    private static let watchdogInterval: TimeInterval = 6.0
-    private static let inviteThrottle: TimeInterval = 8.0
-    private static let reconnectDelay: TimeInterval = 1.5
-    private static let inviteTimeout: TimeInterval = 15.0
+    // Tightened from 6s → 3s so a failed first invite re-fires within one
+    // perceived "beat" instead of stalling the user.
+    private static let watchdogInterval: TimeInterval = 3.0
+    // Throttle stays a hair under inviteTimeout so we don't queue a second
+    // invite while the first is still on the wire.
+    private static let inviteThrottle: TimeInterval = 4.0
+    private static let reconnectDelay: TimeInterval = 0.8
+    private static let inviteTimeout: TimeInterval = 10.0
+    /// Hard ceiling on `.connecting` before we drop back to idle and let the
+    /// watchdog fire a fresh invite. MC sometimes swallows `notConnected`
+    /// after a silent handshake failure; without this ceiling the UI sits on
+    /// "Connecting…" indefinitely.
+    private static let connectingCeiling: TimeInterval = 12.0
 
     // MARK: Identity
 
@@ -91,6 +108,8 @@ public final class PeerManager: NSObject {
     @ObservationIgnored private var reconnectTask: Task<Void, Never>?
     @ObservationIgnored private var discoveredPeers: [MCPeerID] = []
     @ObservationIgnored private var hasReceivedFirstConnect: Bool = false
+    @ObservationIgnored private var connectingStartedAt: Date?
+    @ObservationIgnored private var inFlightInviteTarget: MCPeerID?
 
     private let encoder = JSONEncoder()
 
@@ -141,7 +160,18 @@ public final class PeerManager: NSObject {
         discoveredPeers.removeAll()
         discoveredPeerNames = []
         connectedPeerNames = []
+        inFlightInviteTarget = nil
+        connectingStartedAt = nil
         status = .offline
+    }
+
+    /// Atomic restart used by the connection-restart button. Avoids the
+    /// `stop()`-then-asyncAfter-`start()` dance that callers were doing
+    /// inline (and which left a window where MC reported stale state).
+    public func restart() {
+        log.info("restart()")
+        stop()
+        start()
     }
 
     private func stopDiscovery() {
@@ -221,6 +251,8 @@ public final class PeerManager: NSObject {
         guard let browser else { return }
         guard !session.connectedPeers.contains(peer) else { return }
         status = .connecting
+        connectingStartedAt = .now
+        inFlightInviteTarget = peer
         lastInviteAt = .now
         lastInvitedPeerName = peer.displayName
         lastConnectionAttemptAt = .now
@@ -262,12 +294,29 @@ public final class PeerManager: NSObject {
 
     /// Re-invite the first discovered host peer if we're not yet connected.
     /// Throttled so we don't queue duplicate invites within a single MC
-    /// invitation window.
+    /// invitation window. Also enforces a hard ceiling on `.connecting` —
+    /// MC occasionally swallows `notConnected` after a silent handshake
+    /// failure, leaving the UI pinned.
     private func watchdogTick() {
         guard role == .remote else { return }
+
+        // Connecting-ceiling: if we've been "Connecting…" for too long
+        // without ever entering `.connected`, drop back to browsing so a
+        // fresh invite can fire. session.connectedPeers stays empty across
+        // these failed handshakes.
+        if status == .connecting,
+           session.connectedPeers.isEmpty,
+           let started = connectingStartedAt,
+           Date.now.timeIntervalSince(started) > Self.connectingCeiling {
+            log.info("Connecting ceiling exceeded — reverting to idle")
+            inFlightInviteTarget = nil
+            connectingStartedAt = nil
+            revertToIdle()
+        }
+
         guard session.connectedPeers.isEmpty else { return }
         guard !discoveredPeers.isEmpty else { return }
-        guard let browser else { return }
+        guard browser != nil else { return }
 
         if let last = lastInviteAt,
            Date.now.timeIntervalSince(last) < Self.inviteThrottle {
@@ -335,6 +384,8 @@ extension PeerManager: MCSessionDelegate {
                 let wasReconnecting = (self.status == .reconnecting || self.status == .connecting)
                 self.status = .connected
                 self.lastError = nil
+                self.connectingStartedAt = nil
+                self.inFlightInviteTarget = nil
                 self.startHeartbeat()
                 if !self.hasReceivedFirstConnect || wasReconnecting {
                     self.hasReceivedFirstConnect = true
@@ -342,11 +393,16 @@ extension PeerManager: MCSessionDelegate {
                 self.onConnect?()
 
             case .connecting:
+                if self.status != .connecting {
+                    self.connectingStartedAt = .now
+                }
                 self.status = .connecting
                 self.lastConnectionAttemptAt = .now
 
             case .notConnected:
                 self.stopHeartbeat()
+                self.inFlightInviteTarget = nil
+                self.connectingStartedAt = nil
                 if connectedNames.isEmpty {
                     if self.hasReceivedFirstConnect {
                         // Lost an established link — go into auto-reconnect.
@@ -442,14 +498,26 @@ extension PeerManager: MCNearbyServiceBrowserDelegate {
         let isHost = info?["role"] == PeerRole.host.rawValue
         log.info("Discovered \(peerID.displayName, privacy: .public) host=\(isHost, privacy: .public)")
         Task { @MainActor in
-            if !self.discoveredPeers.contains(peerID) {
+            // De-duplicate by displayName. MC publishes the same physical
+            // device under separate MCPeerID instances when it's reachable
+            // over more than one transport (Wi-Fi + AWDL/Bluetooth), so
+            // identity comparison alone misses these duplicates. When we
+            // see a fresh MCPeerID for an already-known displayName we
+            // REPLACE the stored one — the newer ID is the one MC will
+            // route invitations through.
+            let displayName = peerID.displayName
+            if let existingIndex = self.discoveredPeers.firstIndex(where: { $0.displayName == displayName }) {
+                self.discoveredPeers[existingIndex] = peerID
+            } else {
                 self.discoveredPeers.append(peerID)
-                self.refreshDiscoveredNames()
             }
+            self.refreshDiscoveredNames()
+
             guard isHost else { return }
             guard !self.session.connectedPeers.contains(peerID) else { return }
-            // Only auto-invite when we're not actively in the middle of an
-            // attempt. The watchdog handles retries on a fixed cadence.
+            // Auto-invite only when we're not already inside an attempt.
+            // The watchdog handles retries on a fixed cadence so we don't
+            // pile invites on top of each other if foundPeer fires twice.
             if self.status == .browsing || self.status == .reconnecting {
                 self.invite(peer: peerID)
             }
@@ -460,8 +528,19 @@ extension PeerManager: MCNearbyServiceBrowserDelegate {
                                     lostPeer peerID: MCPeerID) {
         log.info("Lost \(peerID.displayName, privacy: .public)")
         Task { @MainActor in
-            self.discoveredPeers.removeAll { $0 == peerID }
+            let displayName = peerID.displayName
+            self.discoveredPeers.removeAll { $0.displayName == displayName }
             self.refreshDiscoveredNames()
+            // If we were trying to connect to exactly this peer, drop the
+            // in-flight marker so the watchdog can immediately target the
+            // next discovery without waiting on a dead invite to time out.
+            if let target = self.inFlightInviteTarget, target.displayName == displayName {
+                self.inFlightInviteTarget = nil
+                if self.status == .connecting {
+                    self.connectingStartedAt = nil
+                    self.revertToIdle()
+                }
+            }
         }
     }
 

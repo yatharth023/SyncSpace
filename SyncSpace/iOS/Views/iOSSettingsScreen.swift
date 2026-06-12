@@ -109,10 +109,7 @@ struct iOSSettingsScreen: View {
                 }
                 Spacer()
                 Button("Restart") {
-                    model.peerManager.stop()
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
-                        model.peerManager.start()
-                    }
+                    model.peerManager.restart()
                 }
                 .buttonStyle(.bordered).tint(AppTheme.accent)
             }

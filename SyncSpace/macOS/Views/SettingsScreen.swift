@@ -128,10 +128,7 @@ struct SettingsScreen: View {
                 }
                 Spacer()
                 Button(model.peerManager.status == .offline ? "Start" : "Restart") {
-                    model.peerManager.stop()
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
-                        model.peerManager.start()
-                    }
+                    model.peerManager.restart()
                 }
                 .buttonStyle(.bordered)
             }
